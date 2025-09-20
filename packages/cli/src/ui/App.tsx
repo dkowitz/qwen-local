@@ -59,7 +59,7 @@ import {
   type VisionSwitchOutcome,
 } from './components/ModelSwitchDialog.js';
 import {
-  getOpenAIAvailableModelFromEnv,
+  fetchOpenAIModels,
   getFilteredQwenModels,
   type AvailableModel,
 } from './models/availableModels.js';
@@ -230,6 +230,8 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     config.isTrustedFolder(),
   );
   const [currentModel, setCurrentModel] = useState(config.getModel());
+  const [availableOpenAIModels, setAvailableOpenAIModels] = useState<AvailableModel[]>([]);
+  
   const [shellModeActive, setShellModeActive] = useState(false);
   const [showErrorDetails, setShowErrorDetails] = useState<boolean>(false);
   const [showToolDescriptions, setShowToolDescriptions] =
@@ -476,21 +478,21 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     }
   }, [config, addItem, settings.merged]);
 
-  // Watch for model changes (e.g., from Flash fallback)
   useEffect(() => {
-    const checkModelChange = () => {
-      const configModel = config.getModel();
-      if (configModel !== currentModel) {
-        setCurrentModel(configModel);
+    const fetchAndSetModels = async () => {
+      const models = await fetchOpenAIModels();
+      setAvailableOpenAIModels(models);
+      if (models.length > 0 && !process.env['OPENAI_MODEL']) {
+        config.setModel(models[0].id);
+        setCurrentModel(models[0].id);
       }
     };
 
-    // Check immediately and then periodically
-    checkModelChange();
-    const interval = setInterval(checkModelChange, 1000); // Check every second
+    fetchAndSetModels();
+    const interval = setInterval(fetchAndSetModels, 5000);
 
     return () => clearInterval(interval);
-  }, [config, currentModel]);
+  }, [config]);
 
   // Set up Flash fallback handler
   useEffect(() => {
@@ -618,14 +620,12 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
   // Vision switch handler for auto-switch functionality
   const handleVisionSwitchRequired = useCallback(
     async (_query: unknown) =>
-      new Promise<{
-        modelOverride?: string;
-        persistSessionModel?: string;
-        showGuidance?: boolean;
-      }>((resolve, reject) => {
-        setVisionSwitchResolver({ resolve, reject });
-        setIsVisionSwitchDialogOpen(true);
-      }),
+      new Promise<{ modelOverride?: string; persistSessionModel?: string; showGuidance?: boolean }>(
+        (resolve, reject) => {
+          setVisionSwitchResolver({ resolve, reject });
+          setIsVisionSwitchDialogOpen(true);
+        },
+      ),
     [],
   );
 
@@ -649,22 +649,6 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     setIsModelSelectionDialogOpen(false);
   }, []);
 
-  const handleModelSelect = useCallback(
-    (modelId: string) => {
-      config.setModel(modelId);
-      setCurrentModel(modelId);
-      setIsModelSelectionDialogOpen(false);
-      addItem(
-        {
-          type: MessageType.INFO,
-          text: `Switched model to \`${modelId}\` for this session.`,
-        },
-        Date.now(),
-      );
-    },
-    [config, setCurrentModel, addItem],
-  );
-
   const getAvailableModelsForCurrentAuth = useCallback((): AvailableModel[] => {
     const contentGeneratorConfig = config.getContentGeneratorConfig();
     if (!contentGeneratorConfig) return [];
@@ -676,20 +660,16 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
       case AuthType.QWEN_OAUTH:
         return getFilteredQwenModels(visionModelPreviewEnabled);
       case AuthType.USE_OPENAI: {
-        const openAIModel = getOpenAIAvailableModelFromEnv();
-        return openAIModel ? [openAIModel] : [];
+        return availableOpenAIModels;
       }
       default:
         return [];
     }
-  }, [config, settings.merged.experimental?.visionModelPreview]);
+  }, [config, settings.merged.experimental?.visionModelPreview, availableOpenAIModels]);
 
   // Core hooks and processors
-  const {
-    vimEnabled: vimModeEnabled,
-    vimMode,
-    toggleVimEnabled,
-  } = useVimMode();
+  const { vimEnabled: vimModeEnabled, vimMode, toggleVimEnabled } =
+    useVimMode();
 
   const {
     handleSlashCommand,
@@ -762,6 +742,27 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     settings.merged.experimental?.visionModelPreview ?? false,
     handleVisionSwitchRequired,
   );
+
+  const handleModelSelect = useCallback(
+    (modelId: string) => {
+      config.setModel(modelId);
+      setCurrentModel(modelId);
+      setIsModelSelectionDialogOpen(false);
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: `Switched model to \`${modelId}\` for this session.`,
+        },
+        Date.now(),
+      );
+      submitQuery('hello');
+    },
+    [config, setCurrentModel, addItem, submitQuery],
+  );
+
+  
+
+  
 
   const pendingHistoryItems = useMemo(
     () =>
@@ -1202,7 +1203,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
          */}
         <Static
           key={staticKey}
-          items={[
+          items={[ 
             <Box flexDirection="column" key="header">
               {!(
                 settings.merged.ui?.hideBanner || config.getScreenReader()
@@ -1593,8 +1594,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
                     Initialization Error: {initError}
                   </Text>
                   <Text color={Colors.AccentRed}>
-                    {' '}
-                    Please check API key and configuration.
+                    {' '}Please check API key and configuration.
                   </Text>
                 </>
               )}

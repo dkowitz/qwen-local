@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AuthType } from '@qwen-code/qwen-code-core';
+
 import type {
   SlashCommand,
   CommandContext,
@@ -13,25 +13,8 @@ import type {
 } from './types.js';
 import { CommandKind } from './types.js';
 import {
-  AVAILABLE_MODELS_QWEN,
-  getOpenAIAvailableModelFromEnv,
-  type AvailableModel,
+  fetchOpenAIModels,
 } from '../models/availableModels.js';
-
-function getAvailableModelsForAuthType(authType: AuthType): AvailableModel[] {
-  switch (authType) {
-    case AuthType.QWEN_OAUTH:
-      return AVAILABLE_MODELS_QWEN;
-    case AuthType.USE_OPENAI: {
-      const openAIModel = getOpenAIAvailableModelFromEnv();
-      return openAIModel ? [openAIModel] : [];
-    }
-    default:
-      // For other auth types, return empty array for now
-      // This can be expanded later according to the design doc
-      return [];
-  }
-}
 
 export const modelCommand: SlashCommand = {
   name: 'model',
@@ -69,7 +52,7 @@ export const modelCommand: SlashCommand = {
       };
     }
 
-    const availableModels = getAvailableModelsForAuthType(authType);
+    const availableModels = await fetchOpenAIModels();
 
     if (availableModels.length === 0) {
       return {
