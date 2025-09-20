@@ -4,7 +4,7 @@ Within Qwen Code, `packages/cli` is the frontend for users to send and receive p
 
 ## Navigating this section
 
-- **[Authentication](./authentication.md):** A guide to setting up authentication with Qwen OAuth and OpenAI-compatible providers.
+- **[Authentication](./authentication.md):** Configure LM Studio or any OpenAI-compatible provider for the CLI.
 - **[Commands](./commands.md):** A reference for Qwen Code CLI commands (e.g., `/help`, `/tools`, `/theme`).
 - **[Configuration](./configuration.md):** A guide to tailoring Qwen Code CLI behavior using configuration files.
 - **[Token Caching](./token-caching.md):** Optimize API costs through token caching.

@@ -8,8 +8,6 @@ import { AuthType } from '../core/contentGenerator.js';
 import {
   isProQuotaExceededError,
   isGenericQuotaExceededError,
-  isQwenQuotaExceededError,
-  isQwenThrottlingError,
 } from './quotaErrorDetection.js';
 
 export interface HttpError extends Error {
@@ -151,24 +149,9 @@ export async function retryWithBackoff<T>(
           console.warn('Fallback to Flash model failed:', fallbackError);
         }
       }
-
-      // Check for Qwen OAuth quota exceeded error - throw immediately without retry
-      if (authType === AuthType.QWEN_OAUTH && isQwenQuotaExceededError(error)) {
-        throw new Error(
-          `Qwen API quota exceeded: Your Qwen API quota has been exhausted. Please wait for your quota to reset.`,
-        );
-      }
-
-      // Track consecutive 429 errors, but handle Qwen throttling differently
+      // Track consecutive 429 errors
       if (errorStatus === 429) {
-        // For Qwen throttling errors, we still want to track them for exponential backoff
-        // but not for quota fallback logic (since Qwen doesn't have model fallback)
-        if (authType === AuthType.QWEN_OAUTH && isQwenThrottlingError(error)) {
-          // Keep track of 429s but reset the consecutive count to avoid fallback logic
-          consecutive429Count = 0;
-        } else {
-          consecutive429Count++;
-        }
+        consecutive429Count++;
       } else {
         consecutive429Count = 0;
       }

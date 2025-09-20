@@ -48,8 +48,10 @@ export function AuthDialog({
   );
   const [showOpenAIKeyPrompt, setShowOpenAIKeyPrompt] = useState(false);
   const items = [
-    { label: 'Qwen OAuth', value: AuthType.QWEN_OAUTH },
-    { label: 'OpenAI', value: AuthType.USE_OPENAI },
+    {
+      label: 'OpenAI-compatible (LM Studio default)',
+      value: AuthType.USE_OPENAI,
+    },
   ];
 
   const initialAuthIndex = Math.max(
@@ -66,11 +68,7 @@ export function AuthDialog({
         return item.value === defaultAuthType;
       }
 
-      if (process.env['GEMINI_API_KEY']) {
-        return item.value === AuthType.USE_GEMINI;
-      }
-
-      return item.value === AuthType.LOGIN_WITH_GOOGLE;
+      return item.value === AuthType.USE_OPENAI;
     }),
   );
 
@@ -153,7 +151,10 @@ export function AuthDialog({
     >
       <Text bold>Get started</Text>
       <Box marginTop={1}>
-        <Text>How would you like to authenticate for this project?</Text>
+        <Text>
+          Choose how Qwen Code should connect to your local language model
+          backend.
+        </Text>
       </Box>
       <Box marginTop={1}>
         <RadioButtonSelect
@@ -171,11 +172,15 @@ export function AuthDialog({
         <Text color={Colors.AccentPurple}>(Use Enter to Set Auth)</Text>
       </Box>
       <Box marginTop={1}>
-        <Text>Terms of Services and Privacy Notice for Qwen Code</Text>
+        <Text>
+          Set `OPENAI_BASE_URL` to your LM Studio server (e.g.
+          http://127.0.0.1:1234/v1) or any OpenAI-compatible endpoint.
+        </Text>
       </Box>
       <Box marginTop={1}>
-        <Text color={Colors.AccentBlue}>
-          {'https://github.com/QwenLM/Qwen3-Coder/blob/main/README.md'}
+        <Text>
+          Provide API keys only when required by the selected backend; local LM
+          Studio instances keep all requests on your machine.
         </Text>
       </Box>
     </Box>

@@ -7,7 +7,6 @@ This folder contains the different provider implementations for the Qwen Code re
 - `constants.ts` - Common constants used across all providers
 - `types.ts` - Type definitions and interfaces for providers
 - `default.ts` - Default provider for standard OpenAI-compatible APIs
-- `dashscope.ts` - DashScope (Qwen) specific provider implementation
 - `openrouter.ts` - OpenRouter specific provider implementation
 - `index.ts` - Main export file for all providers
 
@@ -16,10 +15,6 @@ This folder contains the different provider implementations for the Qwen Code re
 ### Default Provider
 
 The `DefaultOpenAICompatibleProvider` is the fallback provider for standard OpenAI-compatible APIs. It provides basic functionality without special enhancements and passes through all request parameters.
-
-### DashScope Provider
-
-The `DashScopeOpenAICompatibleProvider` handles DashScope (Qwen) specific features like cache control and metadata.
 
 ### OpenRouter Provider
 

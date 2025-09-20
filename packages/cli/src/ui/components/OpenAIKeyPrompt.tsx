@@ -57,20 +57,13 @@ export function OpenAIKeyPrompt({
     // 检查是否是 Enter 键（通过检查输入是否包含换行符）
     if (input.includes('\n') || input.includes('\r')) {
       if (currentField === 'apiKey') {
-        // 允许空 API key 跳转到下一个字段，让用户稍后可以返回修改
         setCurrentField('baseUrl');
         return;
       } else if (currentField === 'baseUrl') {
         setCurrentField('model');
         return;
       } else if (currentField === 'model') {
-        // 只有在提交时才检查 API key 是否为空
-        if (apiKey.trim()) {
-          onSubmit(apiKey.trim(), baseUrl.trim(), model.trim());
-        } else {
-          // 如果 API key 为空，回到 API key 字段
-          setCurrentField('apiKey');
-        }
+        onSubmit(apiKey.trim(), baseUrl.trim(), model.trim());
       }
       return;
     }
@@ -137,10 +130,9 @@ export function OpenAIKeyPrompt({
       </Text>
       <Box marginTop={1}>
         <Text>
-          Please enter your OpenAI configuration. You can get an API key from{' '}
-          <Text color={Colors.AccentBlue}>
-            https://bailian.console.aliyun.com/?tab=model#/api-key
-          </Text>
+          Provide the credentials for your OpenAI-compatible server. For LM
+          Studio you can leave the key blank or supply a placeholder, and set
+          the base URL to your local endpoint.
         </Text>
       </Box>
       <Box marginTop={1} flexDirection="row">

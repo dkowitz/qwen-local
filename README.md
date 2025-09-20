@@ -27,27 +27,27 @@
 
 Qwen Code is a powerful command-line AI workflow tool adapted from [**Gemini CLI**](https://github.com/google-gemini/gemini-cli) ([details](./README.gemini.md)), specifically optimized for [Qwen3-Coder](https://github.com/QwenLM/Qwen3-Coder) models. It enhances your development workflow with advanced code understanding, automated tasks, and intelligent assistance.
 
-## 💡 Free Options Available
+> This fork defaults to a fully local setup powered by LM Studio. Configure any OpenAI-compatible endpoint if you prefer a different backend.
 
-Get started with Qwen Code at no cost using any of these free options:
+## 💡 Local-First Setup
 
-### 🔥 Qwen OAuth (Recommended)
+Qwen Code now defaults to running entirely against a local OpenAI-compatible server such as [LM Studio](https://lmstudio.ai/).
 
-- **2,000 requests per day** with no token limits
-- **60 requests per minute** rate limit
-- Simply run `qwen` and authenticate with your qwen.ai account
-- Automatic credential management and refresh
-- Use `/auth` command to switch to Qwen OAuth if you have initialized with OpenAI compatible mode
+### 🔌 LM Studio (Default)
 
-### 🌏 Regional Free Tiers
+- Launch LM Studio and enable the OpenAI-compatible server (`http://127.0.0.1:1234/v1` by default).
+- Start `qwen` and select the **OpenAI-compatible (LM Studio default)** auth option.
+- Provide your LM Studio endpoint (and API key if you configured one) when prompted, or set `OPENAI_BASE_URL` / `OPENAI_API_KEY` in `.env`.
 
-- **Mainland China**: ModelScope offers **2,000 free API calls per day**
-- **International**: OpenRouter provides **up to 1,000 free API calls per day** worldwide
+### 🌐 Other OpenAI-Compatible Providers
+
+- Point `OPENAI_BASE_URL` and `OPENAI_API_KEY` to any OpenAI-compatible service (Ollama, OpenRouter, OpenAI, etc.).
+- Switch providers at any time with `/auth` or by updating environment variables.
 
 For detailed setup instructions, see [Authorization](#authorization).
 
-> [!WARNING]
-> **Token Usage Notice**: Qwen Code may issue multiple API calls per cycle, resulting in higher token usage (similar to Claude Code). We're actively optimizing API efficiency.
+> [!NOTE]
+> Local deployments stay on your machine. Remote providers may incur network usage and follow their own quotas.
 
 ## Key Features
 
@@ -125,103 +125,41 @@ Create or edit `.qwen/settings.json` in your home directory:
 
 Choose your preferred authentication method based on your needs:
 
-#### 1. Qwen OAuth (🚀 Recommended - Start in 30 seconds)
+#### 1. LM Studio (Local Default)
 
-The easiest way to get started - completely free with generous quotas:
+1. Install and launch [LM Studio](https://lmstudio.ai/).
+2. Enable the OpenAI-compatible server (default URL: `http://127.0.0.1:1234/v1`).
+3. Start `qwen`, choose the LM Studio option, and follow the prompts to supply the base URL and optional key.
 
-```bash
-# Just run this command and follow the browser authentication
-qwen
-```
-
-**What happens:**
-
-1. **Instant Setup**: CLI opens your browser automatically
-2. **One-Click Login**: Authenticate with your qwen.ai account
-3. **Automatic Management**: Credentials cached locally for future use
-4. **No Configuration**: Zero setup required - just start coding!
-
-**Free Tier Benefits:**
-
-- ✅ **2,000 requests/day** (no token counting needed)
-- ✅ **60 requests/minute** rate limit
-- ✅ **Automatic credential refresh**
-- ✅ **Zero cost** for individual users
-- ℹ️ **Note**: Model fallback may occur to maintain service quality
-
-#### 2. OpenAI-Compatible API
-
-Use API keys for OpenAI or other compatible providers:
-
-**Configuration Methods:**
-
-1. **Environment Variables**
-
-   ```bash
-   export OPENAI_API_KEY="your_api_key_here"
-   export OPENAI_BASE_URL="your_api_endpoint"
-   export OPENAI_MODEL="your_model_choice"
-   ```
-
-2. **Project `.env` File**
-   Create a `.env` file in your project root:
-   ```env
-   OPENAI_API_KEY=your_api_key_here
-   OPENAI_BASE_URL=your_api_endpoint
-   OPENAI_MODEL=your_model_choice
-   ```
-
-**API Provider Options**
-
-> ⚠️ **Regional Notice:**
->
-> - **Mainland China**: Use Alibaba Cloud Bailian or ModelScope
-> - **International**: Use Alibaba Cloud ModelStudio or OpenRouter
-
-<details>
-<summary><b>🇨🇳 For Users in Mainland China</b></summary>
-
-**Option 1: Alibaba Cloud Bailian** ([Apply for API Key](https://bailian.console.aliyun.com/))
+Environment variable example:
 
 ```bash
-export OPENAI_API_KEY="your_api_key_here"
-export OPENAI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-export OPENAI_MODEL="qwen3-coder-plus"
+export OPENAI_BASE_URL="http://127.0.0.1:1234/v1"
+export OPENAI_API_KEY="lmstudio" # placeholder when auth is disabled
+export OPENAI_MODEL="LMStudio/lmstudio-default"
 ```
 
-**Option 2: ModelScope (Free Tier)** ([Apply for API Key](https://modelscope.cn/docs/model-service/API-Inference/intro))
+Project `.env` example:
 
-- ✅ **2,000 free API calls per day**
-- ⚠️ Connect your Aliyun account to avoid authentication errors
+```env
+OPENAI_BASE_URL=http://127.0.0.1:1234/v1
+OPENAI_API_KEY=lmstudio
+OPENAI_MODEL=LMStudio/lmstudio-default
+```
+
+#### 2. Custom OpenAI-Compatible API
+
+Point Qwen Code at any OpenAI-compatible endpoint:
 
 ```bash
-export OPENAI_API_KEY="your_api_key_here"
-export OPENAI_BASE_URL="https://api-inference.modelscope.cn/v1"
-export OPENAI_MODEL="Qwen/Qwen3-Coder-480B-A35B-Instruct"
+export OPENAI_API_KEY="your_api_key"
+export OPENAI_BASE_URL="https://your-provider.example.com/v1"
+export OPENAI_MODEL="provider/model-name"
 ```
 
-</details>
-
-<details>
-<summary><b>🌍 For International Users</b></summary>
-
-**Option 1: Alibaba Cloud ModelStudio** ([Apply for API Key](https://modelstudio.console.alibabacloud.com/))
-
-```bash
-export OPENAI_API_KEY="your_api_key_here"
-export OPENAI_BASE_URL="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-export OPENAI_MODEL="qwen3-coder-plus"
-```
-
-**Option 2: OpenRouter (Free Tier Available)** ([Apply for API Key](https://openrouter.ai/))
-
-```bash
-export OPENAI_API_KEY="your_api_key_here"
-export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
-export OPENAI_MODEL="qwen/qwen3-coder:free"
-```
-
-</details>
+- Works with OpenRouter, Ollama, OpenAI, and self-hosted gateways.
+- Use `/auth` to re-run the selection dialog after changing environment variables.
+- Check your provider's documentation for quotas, pricing, and usage policies.
 
 ## Usage Examples
 

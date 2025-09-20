@@ -10,22 +10,7 @@ export type AvailableModel = {
   isVision?: boolean;
 };
 
-export const AVAILABLE_MODELS_QWEN: AvailableModel[] = [
-  { id: 'qwen3-coder-plus', label: 'qwen3-coder-plus' },
-  { id: 'qwen-vl-max-latest', label: 'qwen-vl-max', isVision: true },
-];
 
-/**
- * Get available Qwen models filtered by vision model preview setting
- */
-export function getFilteredQwenModels(
-  visionModelPreviewEnabled: boolean,
-): AvailableModel[] {
-  if (visionModelPreviewEnabled) {
-    return AVAILABLE_MODELS_QWEN;
-  }
-  return AVAILABLE_MODELS_QWEN.filter((model) => !model.isVision);
-}
 
 /**
  * Currently we use the single model of `OPENAI_MODEL` in the env.
@@ -68,11 +53,9 @@ export function getOpenAIAvailableModelFromEnv(): AvailableModel | null {
  * until our coding model supports multimodal.
  */
 export function getDefaultVisionModel(): string {
-  return 'qwen-vl-max-latest';
+  return 'lmstudio-vision';
 }
 
 export function isVisionModel(modelId: string): boolean {
-  return AVAILABLE_MODELS_QWEN.some(
-    (model) => model.id === modelId && model.isVision,
-  );
+  return /vision|vl/i.test(modelId);
 }

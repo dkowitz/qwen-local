@@ -48,7 +48,6 @@ export enum AuthType {
   USE_VERTEX_AI = 'vertex-ai',
   CLOUD_SHELL = 'cloud-shell',
   USE_OPENAI = 'openai',
-  QWEN_OAUTH = 'qwen-oauth',
 }
 
 export type ContentGeneratorConfig = {
@@ -62,7 +61,7 @@ export type ContentGeneratorConfig = {
   timeout?: number;
   // Maximum retries for failed requests
   maxRetries?: number;
-  // Disable cache control for DashScope providers
+  // Optional flag for providers that support cache control toggles
   disableCacheControl?: boolean;
   samplingParams?: {
     top_p?: number;
@@ -138,17 +137,7 @@ export function createContentGeneratorConfig(
     return contentGeneratorConfig;
   }
 
-  if (authType === AuthType.QWEN_OAUTH) {
-    // For Qwen OAuth, we'll handle the API key dynamically in createContentGenerator
-    // Set a special marker to indicate this is Qwen OAuth
-    contentGeneratorConfig.apiKey = 'QWEN_OAUTH_DYNAMIC_TOKEN';
 
-    // Prefer to use qwen3-coder-plus as the default Qwen model if QWEN_MODEL is not set.
-    contentGeneratorConfig.model =
-      process.env['QWEN_MODEL'] || DEFAULT_QWEN_MODEL;
-
-    return contentGeneratorConfig;
-  }
 
   return contentGeneratorConfig;
 }
@@ -217,27 +206,7 @@ export async function createContentGenerator(
     return createOpenAIContentGenerator(config, gcConfig);
   }
 
-  if (config.authType === AuthType.QWEN_OAUTH) {
-    // Import required classes dynamically
-    const { getQwenOAuthClient: getQwenOauthClient } = await import(
-      '../qwen/qwenOAuth2.js'
-    );
-    const { QwenContentGenerator } = await import(
-      '../qwen/qwenContentGenerator.js'
-    );
 
-    try {
-      // Get the Qwen OAuth client (now includes integrated token management)
-      const qwenClient = await getQwenOauthClient(gcConfig);
-
-      // Create the content generator with dynamic token management
-      return new QwenContentGenerator(qwenClient, config, gcConfig);
-    } catch (error) {
-      throw new Error(
-        `Failed to initialize Qwen: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
 
   throw new Error(
     `Error creating contentGenerator: Unsupported authType: ${config.authType}`,

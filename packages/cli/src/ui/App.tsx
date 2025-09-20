@@ -26,7 +26,7 @@ import { useGeminiStream } from './hooks/useGeminiStream.js';
 import { useLoadingIndicator } from './hooks/useLoadingIndicator.js';
 import { useThemeCommand } from './hooks/useThemeCommand.js';
 import { useAuthCommand } from './hooks/useAuthCommand.js';
-import { useQwenAuth } from './hooks/useQwenAuth.js';
+
 import { useFolderTrust } from './hooks/useFolderTrust.js';
 import { useEditorSettings } from './hooks/useEditorSettings.js';
 import { useQuitConfirmation } from './hooks/useQuitConfirmation.js';
@@ -47,7 +47,6 @@ import { Footer } from './components/Footer.js';
 import { ThemeDialog } from './components/ThemeDialog.js';
 import { AuthDialog } from './components/AuthDialog.js';
 import { AuthInProgress } from './components/AuthInProgress.js';
-import { QwenOAuthProgress } from './components/QwenOAuthProgress.js';
 import { EditorSettingsDialog } from './components/EditorSettingsDialog.js';
 import { FolderTrustDialog } from './components/FolderTrustDialog.js';
 import { ShellConfirmationDialog } from './components/ShellConfirmationDialog.js';
@@ -60,7 +59,6 @@ import {
 } from './components/ModelSwitchDialog.js';
 import {
   fetchOpenAIModels,
-  getFilteredQwenModels,
   type AvailableModel,
 } from './models/availableModels.js';
 import { processVisionSwitchOutcome } from './hooks/useVisionAutoSwitch.js';
@@ -358,15 +356,6 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     cancelAuthentication,
   } = useAuthCommand(settings, setAuthError, config);
 
-  const {
-    isQwenAuthenticating,
-    deviceAuth,
-    isQwenAuth,
-    cancelQwenAuth,
-    authStatus,
-    authMessage,
-  } = useQwenAuth(settings, isAuthenticating);
-
   useEffect(() => {
     if (
       settings.merged.security?.auth?.selectedType &&
@@ -395,26 +384,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     }
   }, [config, isAuthenticating]);
 
-  // Handle Qwen OAuth timeout
-  useEffect(() => {
-    if (isQwenAuth && authStatus === 'timeout') {
-      setAuthError(
-        authMessage ||
-          'Qwen OAuth authentication timed out. Please try again or select a different authentication method.',
-      );
-      cancelQwenAuth();
-      cancelAuthentication();
-      openAuthDialog();
-    }
-  }, [
-    isQwenAuth,
-    authStatus,
-    authMessage,
-    cancelQwenAuth,
-    cancelAuthentication,
-    openAuthDialog,
-    setAuthError,
-  ]);
+
 
   const {
     isEditorDialogOpen,
@@ -653,19 +623,14 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     const contentGeneratorConfig = config.getContentGeneratorConfig();
     if (!contentGeneratorConfig) return [];
 
-    const visionModelPreviewEnabled =
-      settings.merged.experimental?.visionModelPreview ?? false;
-
     switch (contentGeneratorConfig.authType) {
-      case AuthType.QWEN_OAUTH:
-        return getFilteredQwenModels(visionModelPreviewEnabled);
       case AuthType.USE_OPENAI: {
         return availableOpenAIModels;
       }
       default:
         return [];
     }
-  }, [config, settings.merged.experimental?.visionModelPreview, availableOpenAIModels]);
+  }, [config, availableOpenAIModels]);
 
   // Core hooks and processors
   const { vimEnabled: vimModeEnabled, vimMode, toggleVimEnabled } =
@@ -1359,35 +1324,14 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
             </Box>
           ) : isAuthenticating ? (
             <>
-              {isQwenAuth && isQwenAuthenticating ? (
-                <QwenOAuthProgress
-                  deviceAuth={deviceAuth || undefined}
-                  authStatus={authStatus}
-                  authMessage={authMessage}
-                  onTimeout={() => {
-                    setAuthError(
-                      'Qwen OAuth authentication timed out. Please try again.',
-                    );
-                    cancelQwenAuth();
-                    cancelAuthentication();
-                    openAuthDialog();
-                  }}
-                  onCancel={() => {
-                    setAuthError('Qwen OAuth authentication cancelled.');
-                    cancelQwenAuth();
-                    cancelAuthentication();
-                    openAuthDialog();
-                  }}
-                />
-              ) : (
-                <AuthInProgress
+
+            <AuthInProgress
                   onTimeout={() => {
                     setAuthError('Authentication timed out. Please try again.');
                     cancelAuthentication();
                     openAuthDialog();
                   }}
                 />
-              )}
               {showErrorDetails && (
                 <OverflowProvider>
                   <Box flexDirection="column">

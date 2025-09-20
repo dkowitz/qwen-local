@@ -1,68 +1,30 @@
 # Authentication Setup
 
-Qwen Code supports two main authentication methods to access AI models. Choose the method that best fits your use case:
+Qwen Code ships with a local-first authentication flow and supports any OpenAI-compatible endpoint. Choose the option that best fits your workflow:
 
-1.  **Qwen OAuth (Recommended):**
-    - Use this option to log in with your qwen.ai account.
-    - During initial startup, Qwen Code will direct you to the qwen.ai authentication page. Once authenticated, your credentials will be cached locally so the web login can be skipped on subsequent runs.
-    - **Requirements:**
-      - Valid qwen.ai account
-      - Internet connection for initial authentication
-    - **Benefits:**
-      - Seamless access to Qwen models
-      - Automatic credential refresh
-      - No manual API key management required
+1.  **LM Studio (Local Default):**
+    - Run the LM Studio OpenAI-compatible server (`http://127.0.0.1:1234/v1`).
+    - Start `qwen` and select the **OpenAI-compatible (LM Studio default)** option.
+    - Supply the base URL (and API key if you configured one). Blank keys are accepted for local servers.
+    - Recommended environment variables:
 
-    **Getting Started:**
+      ```bash
+      export OPENAI_BASE_URL="http://127.0.0.1:1234/v1"
+      export OPENAI_API_KEY="lmstudio"  # placeholder if auth disabled
+      export OPENAI_MODEL="LMStudio/lmstudio-default"
+      ```
 
-    ```bash
-    # Start Qwen Code and follow the OAuth flow
-    qwen
-    ```
+2.  **<a id="openai-api"></a>OpenAI-Compatible API (Remote or Custom):**
+    - Use API keys for OpenAI, OpenRouter, Ollama, Azure OpenAI, or any compatible gateway.
+    - Configure via environment variables or project `.env` files:
 
-    The CLI will automatically open your browser and guide you through the authentication process.
+      ```bash
+      export OPENAI_API_KEY="your_api_key"
+      export OPENAI_BASE_URL="https://your-provider.example.com/v1"
+      export OPENAI_MODEL="provider/model-name"
+      ```
 
-    **For users who authenticate using their qwen.ai account:**
-
-    **Quota:**
-    - 60 requests per minute
-    - 2,000 requests per day
-    - Token usage is not applicable
-
-    **Cost:** Free
-
-    **Notes:** A specific quota for different models is not specified; model fallback may occur to preserve shared experience quality.
-
-2.  **<a id="openai-api"></a>OpenAI-Compatible API:**
-    - Use API keys for OpenAI or other compatible providers.
-    - This method allows you to use various AI models through API keys.
-
-    **Configuration Methods:**
-
-    a) **Environment Variables:**
-
-    ```bash
-    export OPENAI_API_KEY="your_api_key_here"
-    export OPENAI_BASE_URL="your_api_endpoint"  # Optional
-    export OPENAI_MODEL="your_model_choice"     # Optional
-    ```
-
-    b) **Project `.env` File:**
-    Create a `.env` file in your project root:
-
-    ```env
-    OPENAI_API_KEY=your_api_key_here
-    OPENAI_BASE_URL=your_api_endpoint
-    OPENAI_MODEL=your_model_choice
-    ```
-
-    **Supported Providers:**
-    - OpenAI (https://platform.openai.com/api-keys)
-    - Alibaba Cloud Bailian
-    - ModelScope
-    - OpenRouter
-    - Azure OpenAI
-    - Any OpenAI-compatible API
+    - Typical providers: LM Studio, OpenAI, OpenRouter, Ollama (HTTP bridge), Azure OpenAI, or self-hosted FastAPI proxies.
 
 ## Switching Authentication Methods
 
@@ -99,9 +61,9 @@ Qwen Code automatically loads environment variables from the **first** `.env` fi
 ```bash
 mkdir -p .qwen
 cat >> .qwen/.env <<'EOF'
-OPENAI_API_KEY="your-api-key"
-OPENAI_BASE_URL="https://api-inference.modelscope.cn/v1"
-OPENAI_MODEL="Qwen/Qwen3-Coder-480B-A35B-Instruct"
+OPENAI_API_KEY="lmstudio"
+OPENAI_BASE_URL="http://127.0.0.1:1234/v1"
+OPENAI_MODEL="LMStudio/lmstudio-default"
 EOF
 ```
 
@@ -110,9 +72,9 @@ EOF
 ```bash
 mkdir -p ~/.qwen
 cat >> ~/.qwen/.env <<'EOF'
-OPENAI_API_KEY="your-api-key"
-OPENAI_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-OPENAI_MODEL="qwen3-coder-plus"
+OPENAI_API_KEY="lmstudio"
+OPENAI_BASE_URL="http://127.0.0.1:1234/v1"
+OPENAI_MODEL="LMStudio/lmstudio-default"
 EOF
 ```
 
@@ -132,9 +94,9 @@ OpenAI-compatible API method if configured:
 **Example for headless environments:**
 
 ```bash
-export OPENAI_API_KEY="your-api-key"
-export OPENAI_BASE_URL="https://api-inference.modelscope.cn/v1"
-export OPENAI_MODEL="Qwen/Qwen3-Coder-480B-A35B-Instruct"
+export OPENAI_API_KEY="lmstudio"
+export OPENAI_BASE_URL="http://127.0.0.1:1234/v1"
+export OPENAI_MODEL="LMStudio/lmstudio-default"
 
 # Run Qwen Code
 qwen

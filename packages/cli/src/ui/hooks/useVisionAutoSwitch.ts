@@ -123,8 +123,8 @@ export function shouldOfferVisionSwitch(
   currentModel: string,
   visionModelPreviewEnabled: boolean = false,
 ): boolean {
-  // Only trigger for qwen-oauth
-  if (authType !== AuthType.QWEN_OAUTH) {
+  // Only trigger for OpenAI-compatible auth (used for local LM Studio)
+  if (authType !== AuthType.USE_OPENAI) {
     return false;
   }
 
@@ -220,8 +220,8 @@ export function useVisionAutoSwitch(
 
       const contentGeneratorConfig = config.getContentGeneratorConfig();
 
-      // Only handle qwen-oauth auth type
-      if (contentGeneratorConfig?.authType !== AuthType.QWEN_OAUTH) {
+      // Only handle OpenAI-compatible auth type (local LM Studio default)
+      if (contentGeneratorConfig?.authType !== AuthType.USE_OPENAI) {
         return { shouldProceed: true };
       }
 

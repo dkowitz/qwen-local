@@ -24,9 +24,13 @@ export const Tips: React.FC<TipsProps> = ({ config }) => {
       <Text color={Colors.Foreground}>
         2. Be specific for the best results.
       </Text>
+      <Text color={Colors.Foreground}>
+        3. Point <Text bold color={Colors.AccentPurple}>OPENAI_BASE_URL</Text>{' '}
+        at your LM Studio server (default http://127.0.0.1:1234/v1).
+      </Text>
       {geminiMdFileCount === 0 && (
         <Text color={Colors.Foreground}>
-          3. Create{' '}
+          4. Create{' '}
           <Text bold color={Colors.AccentPurple}>
             QWEN.md
           </Text>{' '}
@@ -34,7 +38,7 @@ export const Tips: React.FC<TipsProps> = ({ config }) => {
         </Text>
       )}
       <Text color={Colors.Foreground}>
-        {geminiMdFileCount === 0 ? '4.' : '3.'}{' '}
+        {geminiMdFileCount === 0 ? '5.' : '4.'}{' '}
         <Text bold color={Colors.AccentPurple}>
           /help
         </Text>{' '}
