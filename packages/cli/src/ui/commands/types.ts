@@ -56,6 +56,10 @@ export interface CommandContext {
      * @param history The array of history items to load.
      */
     loadHistory: UseHistoryManagerReturn['loadHistory'];
+    /**
+     * Returns the current rendered chat history.
+     */
+    getHistory: () => HistoryItem[];
     /** Toggles a special display mode. */
     toggleCorgiMode: () => void;
     toggleVimEnabled: () => Promise<boolean>;

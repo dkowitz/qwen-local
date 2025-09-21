@@ -52,6 +52,7 @@ export const createMockCommandContext = (
       pendingItem: null,
       setPendingItem: vi.fn(),
       loadHistory: vi.fn(),
+      getHistory: vi.fn(() => []),
       toggleCorgiMode: vi.fn(),
       toggleVimEnabled: vi.fn(),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

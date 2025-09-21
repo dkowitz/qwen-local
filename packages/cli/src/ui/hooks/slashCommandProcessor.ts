@@ -44,6 +44,7 @@ export const useSlashCommandProcessor = (
   addItem: UseHistoryManagerReturn['addItem'],
   clearItems: UseHistoryManagerReturn['clearItems'],
   loadHistory: UseHistoryManagerReturn['loadHistory'],
+  getHistorySnapshot: () => HistoryItem[],
   refreshStatic: () => void,
   onDebugMessage: (message: string) => void,
   openThemeDialog: () => void,
@@ -196,6 +197,7 @@ export const useSlashCommandProcessor = (
           refreshStatic();
         },
         loadHistory,
+        getHistory: getHistorySnapshot,
         setDebugMessage: onDebugMessage,
         pendingItem: pendingCompressionItem,
         setPendingItem: setPendingCompressionItem,
@@ -215,6 +217,7 @@ export const useSlashCommandProcessor = (
       gitService,
       logger,
       loadHistory,
+      getHistorySnapshot,
       addItem,
       clearItems,
       refreshStatic,

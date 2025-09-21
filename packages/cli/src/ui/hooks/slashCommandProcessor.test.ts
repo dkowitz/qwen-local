@@ -143,6 +143,7 @@ describe('useSlashCommandProcessor', () => {
         mockAddItem,
         mockClearItems,
         mockLoadHistory,
+        () => [],
         vi.fn(), // refreshStatic
         vi.fn(), // onDebugMessage
         mockOpenThemeDialog, // openThemeDialog
@@ -914,6 +915,7 @@ describe('useSlashCommandProcessor', () => {
           mockAddItem,
           mockClearItems,
           mockLoadHistory,
+          () => [],
           vi.fn(), // refreshStatic
           vi.fn(), // onDebugMessage
           vi.fn(), // openThemeDialog

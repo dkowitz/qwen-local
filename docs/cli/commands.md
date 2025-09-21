@@ -46,6 +46,15 @@ Slash commands provide meta-level control over the CLI itself.
     - Integrates with the Welcome Back feature for seamless session resumption
   - **Note:** This command requires an active conversation with at least 2 messages to generate a meaningful summary.
 
+- **`/export`**
+  - **Description:** Export the currently rendered conversation to a Markdown file. The export includes user turns, assistant replies, tool call details, and status messages so that the session can be shared or archived easily.
+  - **Usage:** `/export [relative-or-absolute-path]`
+  - **Features:**
+    - Defaults to `.qwen/conversations/conversation-<timestamp>.md` if no path is provided
+    - Accepts custom absolute or project-relative paths; the `.md` extension is appended automatically when missing
+    - Preserves tool output (diffs, todo lists, task summaries) in Markdown-friendly formatting
+    - Includes session metadata (model, session ID, export time, entry count) at the top of the file
+
 - **`/compress`**
   - **Description:** Replace the entire chat context with a summary. This saves on tokens used for future tasks while retaining a high level summary of what has happened.
 
