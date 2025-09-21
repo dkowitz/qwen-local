@@ -37,6 +37,10 @@ import type {
   HistoryItem,
   HistoryItemWithoutId,
   HistoryItemToolGroup,
+  HistoryItemUser,
+  HistoryItemUserShell,
+  HistoryItemGemini,
+  HistoryItemGeminiContent,
   SlashCommandProcessorResult,
 } from '../types.js';
 import { StreamingState, MessageType, ToolCallStatus } from '../types.js';
@@ -66,6 +70,111 @@ enum StreamProcessingStatus {
   Completed,
   UserCancelled,
   Error,
+  RetryLimitExceeded,
+}
+
+const STREAM_RETRY_LIMIT = Number.parseInt(
+  process.env['QWEN_STREAM_RETRY_LIMIT'] ?? '',
+  10,
+) || 3;
+const AUTO_RECOVERY_MAX_ATTEMPTS = 1;
+const LOOP_RECOVERY_MAX_ATTEMPTS = Number.parseInt(
+  process.env['QWEN_LOOP_RECOVERY_LIMIT'] ?? '',
+  10,
+) || 1;
+
+type HistoryEntry = HistoryItem | HistoryItemWithoutId;
+type SubmitQueryOptions = {
+  isContinuation: boolean;
+  skipLoopRecoveryReset?: boolean;
+};
+
+function truncateForLoopSummary(text: string | undefined, maxLength = 280): string {
+  if (!text) {
+    return '';
+  }
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function buildLoopRecoverySummary(
+  history: HistoryItem[],
+  pendingHistoryItem: HistoryItemWithoutId | null,
+): string {
+  const combinedHistory: HistoryEntry[] = pendingHistoryItem
+    ? [...history, pendingHistoryItem]
+    : [...history];
+
+  if (combinedHistory.length === 0) {
+    return '';
+  }
+
+  const reversedHistory = [...combinedHistory].reverse();
+
+  const lastUserEntry = reversedHistory.find(
+    (entry) => entry.type === 'user' || entry.type === 'user_shell',
+  ) as (HistoryItemUser | HistoryItemUserShell) | undefined;
+
+  const lastAssistantEntry = reversedHistory.find(
+    (entry) => entry.type === 'gemini' || entry.type === 'gemini_content',
+  ) as (HistoryItemGemini | HistoryItemGeminiContent) | undefined;
+
+  const recentToolGroups = reversedHistory
+    .filter(
+      (entry): entry is HistoryItemToolGroup => entry.type === 'tool_group',
+    )
+    .slice(0, 2);
+
+  const summarySegments: string[] = [];
+
+  if (lastUserEntry?.text) {
+    summarySegments.push(
+      `Last user request: ${truncateForLoopSummary(lastUserEntry.text)}`,
+    );
+  }
+
+  if (lastAssistantEntry?.text) {
+    summarySegments.push(
+      `Last assistant reply: ${truncateForLoopSummary(lastAssistantEntry.text)}`,
+    );
+  }
+
+  if (recentToolGroups.length > 0) {
+    const flattenedSummaries = recentToolGroups.flatMap((group) =>
+      group.tools.map((tool) => `${tool.name}: ${tool.status.toLowerCase()}`),
+    );
+    const truncatedSummaries = flattenedSummaries.slice(0, 4);
+    const hasMoreSummaries = flattenedSummaries.length > truncatedSummaries.length;
+
+    if (truncatedSummaries.length > 0) {
+      summarySegments.push(
+        `Recent tool calls: ${truncatedSummaries.join(', ')}${
+          hasMoreSummaries ? ', …' : ''
+        }`,
+      );
+    }
+  }
+
+  return summarySegments.join('\n');
+}
+
+function buildLoopRecoveryPrompt(summary: string, attempt: number): string {
+  const promptSections = [
+    'System notice: The previous assistant turn was halted because a potential tool loop was detected. All pending tool activity was cancelled and state was reset.',
+    summary ? `Recent context snapshot:\n${summary}` : undefined,
+    'Realign with the user\'s plan, explain how you will break out of the loop, and continue the work without repeating the same tool sequence. Adjust parameters or choose an alternate tool if needed before proceeding.',
+  ];
+
+  if (attempt > 1) {
+    promptSections.push(
+      'This is an additional recovery attempt. Take a different approach immediately and be explicit about what changed.',
+    );
+  }
+
+  return promptSections.filter(Boolean).join('\n\n');
 }
 
 /**
@@ -100,6 +209,18 @@ export const useGeminiStream = (
   const abortControllerRef = useRef<AbortController | null>(null);
   const turnCancelledRef = useRef(false);
   const isSubmittingQueryRef = useRef(false);
+  const retryAttemptRef = useRef(0);
+  const autoRecoveryAttemptsRef = useRef(0);
+  const pendingAutoRecoveryRef = useRef<
+    {
+      promptId: string;
+      query: PartListUnion;
+      timestamp: number;
+      isContinuation?: boolean;
+      skipLoopReset?: boolean;
+    } | null
+  >(null);
+  const loopRecoveryAttemptsRef = useRef(0);
   const [isResponding, setIsResponding] = useState<boolean>(false);
   const [thought, setThought] = useState<ThoughtSummary | null>(null);
   const [pendingHistoryItemRef, setPendingHistoryItem] =
@@ -115,7 +236,7 @@ export const useGeminiStream = (
     return new GitService(config.getProjectRoot(), storage);
   }, [config, storage]);
 
-  const [toolCalls, scheduleToolCalls, markToolsAsSubmitted] =
+  const [toolCalls, scheduleToolCalls, markToolsAsSubmitted, resetToolScheduler] =
     useReactToolScheduler(
       async (completedToolCallsFromScheduler) => {
         // This onComplete is called when ALL scheduled tools for a given batch are done.
@@ -589,21 +710,84 @@ export const useGeminiStream = (
     [addItem],
   );
 
-  const handleLoopDetectedEvent = useCallback(() => {
-    addItem(
-      {
-        type: 'info',
-        text: `A potential loop was detected. This can happen due to repetitive tool calls or other model behavior. The request has been halted.`,
-      },
-      Date.now(),
-    );
-  }, [addItem]);
+  const handleLoopDetectedEvent = useCallback(
+    (promptId: string) => {
+      const timestamp = Date.now();
+      const summary = buildLoopRecoverySummary(
+        history,
+        pendingHistoryItemRef.current,
+      );
+
+      abortControllerRef.current?.abort();
+      resetToolScheduler('Loop detection triggered automatic recovery.');
+
+      const infoSegments = [
+        '⚠️ Loop detection triggered. Pending tool calls were cancelled to prevent repetitive execution.',
+        summary ? `Recovery snapshot:\n${summary}` : undefined,
+      ].filter(Boolean);
+
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: infoSegments.join('\n\n'),
+        },
+        timestamp,
+      );
+
+      if (pendingAutoRecoveryRef.current) {
+        return;
+      }
+
+      if (loopRecoveryAttemptsRef.current >= LOOP_RECOVERY_MAX_ATTEMPTS) {
+        addItem(
+          {
+            type: MessageType.ERROR,
+            text: 'Automatic recovery was skipped because it has already been attempted for this turn. Please intervene manually.',
+          },
+          timestamp,
+        );
+        return;
+      }
+
+      const attemptNumber = loopRecoveryAttemptsRef.current + 1;
+      loopRecoveryAttemptsRef.current = attemptNumber;
+
+      const recoveryPromptText = buildLoopRecoveryPrompt(summary, attemptNumber);
+      const recoveryPromptId = `${promptId}-loop-recovery-${attemptNumber}`;
+
+      pendingAutoRecoveryRef.current = {
+        promptId: recoveryPromptId,
+        query: [{ text: recoveryPromptText }],
+        timestamp,
+        isContinuation: false,
+        skipLoopReset: true,
+      };
+
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: 'Attempting automatic recovery to resume progress without repeating the loop...',
+        },
+        timestamp,
+      );
+    },
+    [
+      addItem,
+      history,
+      pendingHistoryItemRef,
+      resetToolScheduler,
+      pendingAutoRecoveryRef,
+      loopRecoveryAttemptsRef,
+      abortControllerRef,
+    ],
+  );
 
   const processGeminiStreamEvents = useCallback(
     async (
       stream: AsyncIterable<GeminiEvent>,
       userMessageTimestamp: number,
       signal: AbortSignal,
+      promptId: string,
     ): Promise<StreamProcessingStatus> => {
       let geminiMessageBuffer = '';
       const toolCallRequests: ToolCallRequestInfo[] = [];
@@ -613,6 +797,9 @@ export const useGeminiStream = (
             setThought(event.value);
             break;
           case ServerGeminiEventType.Content:
+            if (retryAttemptRef.current > 0) {
+              retryAttemptRef.current = 0;
+            }
             geminiMessageBuffer = handleContentEvent(
               event.value,
               geminiMessageBuffer,
@@ -653,7 +840,49 @@ export const useGeminiStream = (
             loopDetectedRef.current = true;
             break;
           case ServerGeminiEventType.Retry:
-            // Will add the missing logic later
+            retryAttemptRef.current += 1;
+            setThought(null);
+            geminiMessageBuffer = '';
+            if (pendingHistoryItemRef.current) {
+              setPendingHistoryItem(null);
+            }
+            addItem(
+              {
+                type: MessageType.INFO,
+                text: `Model response stalled. Retrying attempt ${retryAttemptRef.current}/${STREAM_RETRY_LIMIT}...`,
+              },
+              Date.now(),
+            );
+
+            if (retryAttemptRef.current >= STREAM_RETRY_LIMIT) {
+              const recoveryText =
+                'Streaming stalled after repeated retries. Please resume from the last successful step and continue.';
+              if (autoRecoveryAttemptsRef.current < AUTO_RECOVERY_MAX_ATTEMPTS) {
+                autoRecoveryAttemptsRef.current += 1;
+                pendingAutoRecoveryRef.current = {
+                  promptId,
+                  query: [{ text: recoveryText }],
+                  timestamp: Date.now(),
+                };
+                addItem(
+                  {
+                    type: MessageType.INFO,
+                    text: 'Attempting self-recovery after repeated streaming stalls...',
+                  },
+                  Date.now(),
+                );
+                return StreamProcessingStatus.RetryLimitExceeded;
+              }
+
+              addItem(
+                {
+                  type: MessageType.ERROR,
+                  text: 'Streaming stalled repeatedly and automatic recovery has already been attempted. Stopping response.',
+                },
+                Date.now(),
+              );
+              return StreamProcessingStatus.Error;
+            }
             break;
           default: {
             // enforces exhaustive switch-case
@@ -676,13 +905,16 @@ export const useGeminiStream = (
       handleFinishedEvent,
       handleMaxSessionTurnsEvent,
       handleSessionTokenLimitExceededEvent,
+      addItem,
+      setPendingHistoryItem,
+      setThought,
     ],
   );
 
   const submitQuery = useCallback(
     async (
       query: PartListUnion,
-      options?: { isContinuation: boolean },
+      options?: SubmitQueryOptions,
       prompt_id?: string,
     ) => {
       // Prevent concurrent executions of submitQuery, but allow continuations
@@ -744,6 +976,12 @@ export const useGeminiStream = (
       const finalQueryToSend = queryToSend;
 
       if (!options?.isContinuation) {
+        retryAttemptRef.current = 0;
+        autoRecoveryAttemptsRef.current = 0;
+        if (!options?.skipLoopRecoveryReset) {
+          loopRecoveryAttemptsRef.current = 0;
+        }
+        pendingAutoRecoveryRef.current = null;
         startNewPrompt();
         setThought(null); // Reset thought when starting a new prompt
       }
@@ -752,6 +990,7 @@ export const useGeminiStream = (
       setInitError(null);
 
       try {
+        retryAttemptRef.current = 0;
         const stream = geminiClient.sendMessageStream(
           finalQueryToSend,
           abortSignal,
@@ -761,6 +1000,7 @@ export const useGeminiStream = (
           stream,
           userMessageTimestamp,
           abortSignal,
+          prompt_id!,
         );
 
         if (processingStatus === StreamProcessingStatus.UserCancelled) {
@@ -770,13 +1010,19 @@ export const useGeminiStream = (
           return;
         }
 
+        if (processingStatus === StreamProcessingStatus.RetryLimitExceeded) {
+          // self-recovery will be triggered after cleanup below
+        }
+
         if (pendingHistoryItemRef.current) {
           addItem(pendingHistoryItemRef.current, userMessageTimestamp);
           setPendingHistoryItem(null);
         }
         if (loopDetectedRef.current) {
           loopDetectedRef.current = false;
-          handleLoopDetectedEvent();
+          if (prompt_id) {
+            handleLoopDetectedEvent(prompt_id);
+          }
         }
 
         // Restore original model if it was temporarily overridden
@@ -805,6 +1051,23 @@ export const useGeminiStream = (
       } finally {
         setIsResponding(false);
         isSubmittingQueryRef.current = false;
+      const pendingRecovery = pendingAutoRecoveryRef.current;
+      if (pendingRecovery) {
+        pendingAutoRecoveryRef.current = null;
+        queueMicrotask(() => {
+          const continuationFlag =
+            pendingRecovery.isContinuation ?? true;
+          const skipLoopRecoveryReset = pendingRecovery.skipLoopReset ?? false;
+          void submitQuery(
+            pendingRecovery.query,
+            {
+              isContinuation: continuationFlag,
+              skipLoopRecoveryReset,
+            },
+            pendingRecovery.promptId,
+          );
+        });
+      }
       }
     },
     [

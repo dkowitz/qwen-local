@@ -9,3 +9,6 @@
 - Update README and onboarding copy to highlight the local-only workflow.
 - Add DuckDuckGo-backed web search with optional Tavily support, plus `/search` and `/search-engine` commands for quick querying and provider selection.
 - Add an `/export` command to save the current conversation (including tool output) to Markdown for easy sharing.
+- Discover per-model context limits/tokenizer hints from LM Studio/OpenAI-compatible endpoints and surface them in the CLI UI and token budgeting.
+- Handle streaming retries explicitly, showing the retry status, and automatically attempt a self-recovery after repeated stalls.
+- Auto-recover when loop detection fires by cancelling pending tools, summarizing recent context, and dispatching a guided recovery prompt so the agent can continue autonomously.

@@ -34,6 +34,7 @@ export type ScheduleFn = (
   signal: AbortSignal,
 ) => void;
 export type MarkToolsAsSubmittedFn = (callIds: string[]) => void;
+export type ResetSchedulerFn = (reason?: string) => void;
 
 export type TrackedScheduledToolCall = ScheduledToolCall & {
   responseSubmittedToGemini?: boolean;
@@ -70,7 +71,12 @@ export function useReactToolScheduler(
   >,
   getPreferredEditor: () => EditorType | undefined,
   onEditorClose: () => void,
-): [TrackedToolCall[], ScheduleFn, MarkToolsAsSubmittedFn] {
+): [
+  TrackedToolCall[],
+  ScheduleFn,
+  MarkToolsAsSubmittedFn,
+  ResetSchedulerFn,
+] {
   const [toolCallsForDisplay, setToolCallsForDisplay] = useState<
     TrackedToolCall[]
   >([]);
@@ -174,7 +180,15 @@ export function useReactToolScheduler(
     [],
   );
 
-  return [toolCallsForDisplay, schedule, markToolsAsSubmitted];
+  const resetScheduler: ResetSchedulerFn = useCallback(
+    (reason?: string) => {
+      scheduler.reset(reason);
+      setPendingHistoryItem(null);
+    },
+    [scheduler, setPendingHistoryItem],
+  );
+
+  return [toolCallsForDisplay, schedule, markToolsAsSubmitted, resetScheduler];
 }
 
 /**

@@ -150,7 +150,7 @@ describe('useGeminiStream', () => {
   let mockOnDebugMessage: Mock;
   let mockHandleSlashCommand: Mock;
   let mockScheduleToolCalls: Mock;
-  let mockCancelAllToolCalls: Mock;
+  let mockResetToolScheduler: Mock;
   let mockMarkToolsAsSubmitted: Mock;
   let handleAtCommandSpy: MockInstance;
 
@@ -219,15 +219,15 @@ describe('useGeminiStream', () => {
 
     // Mock return value for useReactToolScheduler
     mockScheduleToolCalls = vi.fn();
-    mockCancelAllToolCalls = vi.fn();
+    mockResetToolScheduler = vi.fn();
     mockMarkToolsAsSubmitted = vi.fn();
 
     // Default mock for useReactToolScheduler to prevent toolCalls being undefined initially
     mockUseReactToolScheduler.mockReturnValue([
       [], // Default to empty array for toolCalls
       mockScheduleToolCalls,
-      mockCancelAllToolCalls,
       mockMarkToolsAsSubmitted,
+      mockResetToolScheduler,
     ]);
 
     // Reset mocks for GeminiClient instance methods (startChat and sendMessageStream)
@@ -239,6 +239,77 @@ describe('useGeminiStream', () => {
       .mockClear()
       .mockReturnValue((async function* () {})());
     handleAtCommandSpy = vi.spyOn(atCommandProcessor, 'handleAtCommand');
+  });
+
+  describe('Loop detection auto recovery', () => {
+    it('resets tool state and schedules a recovery prompt', async () => {
+      mockStartNewPrompt.mockClear();
+
+      const loopStream = (async function* () {
+        yield { type: ServerGeminiEventType.LoopDetected };
+        yield { type: ServerGeminiEventType.Finished, value: 'STOP' };
+      })();
+      const recoveryStream = (async function* () {
+        yield { type: ServerGeminiEventType.Content, value: 'Recovered content' };
+        yield { type: ServerGeminiEventType.Finished, value: 'STOP' };
+      })();
+
+      mockSendMessageStream
+        .mockReturnValueOnce(loopStream)
+        .mockReturnValueOnce(recoveryStream);
+
+      const history: HistoryItem[] = [
+        { id: 1, type: 'user', text: 'Please finish optimizing the loop handler.' },
+        { id: 2, type: 'gemini', text: 'Attempting the tool sequence now.' },
+      ];
+
+      const { result } = renderTestHook([], undefined, history);
+
+      await act(async () => {
+        await result.current.submitQuery('trigger loop detection');
+      });
+
+      await waitFor(() => {
+        expect(mockResetToolScheduler).toHaveBeenCalledTimes(1);
+      });
+
+      const loopMessageCall = mockAddItem.mock.calls.find(
+        ([item]) =>
+          item.type === MessageType.INFO &&
+          typeof item.text === 'string' &&
+          item.text.includes('Loop detection triggered.'),
+      );
+
+      expect(loopMessageCall?.[0].text).toContain('Recovery snapshot:');
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
+      });
+
+      const recoveryPrompt =
+        mockSendMessageStream.mock.calls[1]?.[0] as PartListUnion;
+      const firstRecoveryPart =
+        Array.isArray(recoveryPrompt) && recoveryPrompt.length > 0
+          ? (recoveryPrompt[0] as Part)
+          : (recoveryPrompt as Part);
+
+      expect(firstRecoveryPart?.text).toContain(
+        'System notice: The previous assistant turn was halted',
+      );
+
+      expect(
+        mockAddItem.mock.calls.some(
+          ([item]) =>
+            item.type === MessageType.INFO &&
+            typeof item.text === 'string' &&
+            item.text.includes('Attempting automatic recovery to resume progress'),
+        ),
+      ).toBe(true);
+
+      await waitFor(() => {
+        expect(mockStartNewPrompt).toHaveBeenCalledTimes(2);
+      });
+    });
   });
 
   const mockLoadedSettings: LoadedSettings = {
@@ -253,6 +324,7 @@ describe('useGeminiStream', () => {
   const renderTestHook = (
     initialToolCalls: TrackedToolCall[] = [],
     geminiClient?: any,
+    initialHistory: HistoryItem[] = [],
   ) => {
     let currentToolCalls = initialToolCalls;
     const setToolCalls = (newToolCalls: TrackedToolCall[]) => {
@@ -262,8 +334,8 @@ describe('useGeminiStream', () => {
     mockUseReactToolScheduler.mockImplementation(() => [
       currentToolCalls,
       mockScheduleToolCalls,
-      mockCancelAllToolCalls,
       mockMarkToolsAsSubmitted,
+      mockResetToolScheduler,
     ]);
 
     const client = geminiClient || mockConfig.getGeminiClient();
@@ -306,7 +378,7 @@ describe('useGeminiStream', () => {
       {
         initialProps: {
           client,
-          history: [],
+          history: initialHistory,
           addItem: mockAddItem as unknown as UseHistoryManagerReturn['addItem'],
           config: mockConfig,
           onDebugMessage: mockOnDebugMessage,
@@ -443,7 +515,12 @@ describe('useGeminiStream', () => {
 
     mockUseReactToolScheduler.mockImplementation((onComplete) => {
       capturedOnComplete = onComplete;
-      return [[], mockScheduleToolCalls, mockMarkToolsAsSubmitted];
+      return [
+        [],
+        mockScheduleToolCalls,
+        mockMarkToolsAsSubmitted,
+        mockResetToolScheduler,
+      ];
     });
 
     renderHook(() =>
@@ -522,7 +599,12 @@ describe('useGeminiStream', () => {
 
     mockUseReactToolScheduler.mockImplementation((onComplete) => {
       capturedOnComplete = onComplete;
-      return [[], mockScheduleToolCalls, mockMarkToolsAsSubmitted];
+      return [
+        [],
+        mockScheduleToolCalls,
+        mockMarkToolsAsSubmitted,
+        mockResetToolScheduler,
+      ];
     });
 
     renderHook(() =>
@@ -630,7 +712,12 @@ describe('useGeminiStream', () => {
 
     mockUseReactToolScheduler.mockImplementation((onComplete) => {
       capturedOnComplete = onComplete;
-      return [[], mockScheduleToolCalls, mockMarkToolsAsSubmitted];
+      return [
+        [],
+        mockScheduleToolCalls,
+        mockMarkToolsAsSubmitted,
+        mockResetToolScheduler,
+      ];
     });
 
     renderHook(() =>
@@ -860,6 +947,40 @@ describe('useGeminiStream', () => {
 
       // Verify state is reset
       expect(result.current.streamingState).toBe(StreamingState.Idle);
+    });
+
+    it('should attempt self-recovery after hitting the streaming retry limit', async () => {
+      const retryOnlyStream = (async function* () {
+        yield { type: ServerGeminiEventType.Retry };
+        yield { type: ServerGeminiEventType.Retry };
+        yield { type: ServerGeminiEventType.Retry };
+      })();
+      const recoveryStream = (async function* () {
+        yield { type: ServerGeminiEventType.Content, value: 'Recovered content' };
+        yield { type: ServerGeminiEventType.Finished, value: 'STOP' };
+      })();
+
+      mockSendMessageStream
+        .mockReturnValueOnce(retryOnlyStream)
+        .mockReturnValueOnce(recoveryStream);
+
+      const { result } = renderTestHook();
+
+      await act(async () => {
+        await result.current.submitQuery('trigger retry limit');
+      });
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
+      });
+
+      expect(mockAddItem).toHaveBeenCalledWith(
+        {
+          type: MessageType.INFO,
+          text: 'Attempting self-recovery after repeated streaming stalls...',
+        },
+        expect.any(Number),
+      );
     });
 
     it('should call onCancelSubmit handler when escape is pressed', async () => {
@@ -1179,7 +1300,12 @@ describe('useGeminiStream', () => {
 
       mockUseReactToolScheduler.mockImplementation((onComplete) => {
         capturedOnComplete = onComplete;
-        return [[], mockScheduleToolCalls, mockMarkToolsAsSubmitted];
+        return [
+          [],
+          mockScheduleToolCalls,
+          mockMarkToolsAsSubmitted,
+          mockResetToolScheduler,
+        ];
       });
 
       renderHook(() =>

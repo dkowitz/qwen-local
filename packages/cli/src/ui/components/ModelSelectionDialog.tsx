@@ -39,9 +39,13 @@ export const ModelSelectionDialog: React.FC<ModelSelectionDialogProps> = ({
   const options: Array<RadioSelectItem<string>> = availableModels.map(
     (model) => {
       const visionIndicator = model.isVision ? ' [Vision]' : '';
+      const contextLimit = model.contextWindow ?? model.promptWindow;
+      const contextIndicator = contextLimit
+        ? ` • ${contextLimit.toLocaleString()} ctx`
+        : '';
       const currentIndicator = model.id === currentModel ? ' (current)' : '';
       return {
-        label: `${model.label}${visionIndicator}${currentIndicator}`,
+        label: `${model.label}${visionIndicator}${contextIndicator}${currentIndicator}`,
         value: model.id,
       };
     },

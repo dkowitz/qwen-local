@@ -11,15 +11,19 @@ import { tokenLimit } from '@qwen-code/qwen-code-core';
 export const ContextUsageDisplay = ({
   promptTokenCount,
   model,
+  contextLimit,
 }: {
   promptTokenCount: number;
   model: string;
+  contextLimit?: number;
 }) => {
-  const percentage = promptTokenCount / tokenLimit(model);
+  const limit = contextLimit && contextLimit > 0 ? contextLimit : tokenLimit(model);
+  const ratio = limit > 0 ? Math.min(Math.max(promptTokenCount / limit, 0), 1) : 0;
+  const percentRemaining = Math.max(0, 1 - ratio) * 100;
 
   return (
     <Text color={Colors.Gray}>
-      ({((1 - percentage) * 100).toFixed(0)}% context left)
+      ({percentRemaining.toFixed(0)}% context left)
     </Text>
   );
 };

@@ -33,6 +33,7 @@ interface FooterProps {
   nightly: boolean;
   vimMode?: string;
   isTrustedFolder?: boolean;
+  contextLimit?: number;
 }
 
 export const Footer: React.FC<FooterProps> = ({
@@ -49,6 +50,7 @@ export const Footer: React.FC<FooterProps> = ({
   nightly,
   vimMode,
   isTrustedFolder,
+  contextLimit,
 }) => {
   const { columns: terminalWidth } = useTerminalSize();
 
@@ -130,6 +132,7 @@ export const Footer: React.FC<FooterProps> = ({
           <ContextUsageDisplay
             promptTokenCount={promptTokenCount}
             model={model}
+            contextLimit={contextLimit}
           />
         </Text>
         {corgiMode && (

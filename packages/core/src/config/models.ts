@@ -13,3 +13,12 @@ export const DEFAULT_GEMINI_FLASH_MODEL = 'gemini-2.5-flash';
 export const DEFAULT_GEMINI_FLASH_LITE_MODEL = 'gemini-2.5-flash-lite';
 
 export const DEFAULT_GEMINI_EMBEDDING_MODEL = 'gemini-embedding-001';
+
+export interface ModelMetadata {
+  /** Maximum tokens the model can accept in a single request */
+  contextWindow?: number;
+  /** Optional alternate prompt window if a provider differentiates input token limits */
+  promptWindow?: number;
+  /** Hint for which tokenizer/encoding to use when estimating tokens */
+  tokenizer?: string;
+}

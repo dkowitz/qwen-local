@@ -32,6 +32,7 @@ import {
   Kind,
   BaseDeclarativeTool,
   BaseToolInvocation,
+  CoreToolScheduler,
 } from '@qwen-code/qwen-code-core';
 import type { HistoryItemWithoutId, HistoryItemToolGroup } from '../types.js';
 import { ToolCallStatus } from '../types.js';
@@ -271,6 +272,8 @@ describe('useReactToolScheduler', () => {
   let capturedOnConfirmForTest:
     | ((outcome: ToolConfirmationOutcome) => void | Promise<void>)
     | undefined;
+  let originalReset: ((reason?: string) => void) | undefined;
+  let resetSpy: Mock;
 
   beforeEach(() => {
     onComplete = vi.fn();
@@ -322,11 +325,27 @@ describe('useReactToolScheduler', () => {
     );
 
     vi.useFakeTimers();
+
+    const prototype = CoreToolScheduler.prototype as {
+      reset?: (reason?: string) => void;
+    };
+    originalReset = prototype.reset;
+    resetSpy = vi.fn();
+    prototype.reset = resetSpy;
   });
 
   afterEach(() => {
     vi.clearAllTimers();
     vi.useRealTimers();
+
+    const prototype = CoreToolScheduler.prototype as {
+      reset?: (reason?: string) => void;
+    };
+    if (originalReset) {
+      prototype.reset = originalReset;
+    } else {
+      delete prototype.reset;
+    }
   });
 
   const renderScheduler = () =>
@@ -343,6 +362,18 @@ describe('useReactToolScheduler', () => {
   it('initial state should be empty', () => {
     const { result } = renderScheduler();
     expect(result.current[0]).toEqual([]);
+  });
+
+  it('exposes a reset callback that clears pending history', () => {
+    const { result } = renderScheduler();
+    const reset = result.current[3];
+
+    act(() => {
+      reset('reset-for-test');
+    });
+
+    expect(resetSpy).toHaveBeenCalledWith('reset-for-test');
+    expect(setPendingHistoryItem).toHaveBeenCalledWith(null);
   });
 
   it('should schedule and execute a tool call successfully', async () => {

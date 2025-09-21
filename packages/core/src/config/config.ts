@@ -56,6 +56,8 @@ import {
   DEFAULT_GEMINI_FLASH_MODEL,
 } from './models.js';
 import { Storage } from './storage.js';
+import type { ModelMetadata } from './models.js';
+import { tokenLimit } from '../core/tokenLimits.js';
 
 // Re-export OAuth config type
 export type { AnyToolInvocation, MCPOAuthConfig };
@@ -334,6 +336,7 @@ export class Config {
   private readonly extensionManagement: boolean;
   private readonly enablePromptCompletion: boolean = false;
   private readonly skipLoopDetection: boolean;
+  private discoveredModelMetadata = new Map<string, ModelMetadata>();
   private initialized: boolean = false;
   readonly storage: Storage;
   private readonly fileExclusions: FileExclusions;
@@ -549,6 +552,52 @@ export class Config {
     this.inFallbackMode = active;
   }
 
+  setModelMetadata(modelId: string, metadata?: ModelMetadata): void {
+    if (!metadata || Object.keys(metadata).length === 0) {
+      this.discoveredModelMetadata.delete(modelId);
+      return;
+    }
+    this.discoveredModelMetadata.set(modelId, { ...metadata });
+  }
+
+  setDiscoveredModelMetadata(
+    metadata: Record<string, ModelMetadata | undefined>,
+  ): void {
+    if (!metadata) return;
+    for (const [modelId, data] of Object.entries(metadata)) {
+      if (data) {
+        this.setModelMetadata(modelId, data);
+      } else {
+        this.discoveredModelMetadata.delete(modelId);
+      }
+    }
+  }
+
+  getModelMetadata(modelId: string = this.getModel()): ModelMetadata | undefined {
+    return this.discoveredModelMetadata.get(modelId);
+  }
+
+  getModelContextWindow(modelId?: string): number | undefined {
+    const metadata = this.getModelMetadata(modelId);
+    if (!metadata) return undefined;
+    return metadata.contextWindow ?? metadata.promptWindow;
+  }
+
+  getTokenizerHint(modelId?: string): string | undefined {
+    const metadata = this.getModelMetadata(modelId);
+    return metadata?.tokenizer;
+  }
+
+  getEffectiveTokenLimit(modelId?: string): number {
+    const model = modelId ?? this.getModel();
+    const contextLimit = this.getModelContextWindow(model);
+    if (typeof contextLimit === 'number' && contextLimit > 0) {
+      return contextLimit;
+    }
+    return tokenLimit(model);
+  }
+
+
   setFlashFallbackHandler(handler: FlashFallbackHandler): void {
     this.flashFallbackHandler = handler;
   }
@@ -558,7 +607,11 @@ export class Config {
   }
 
   getSessionTokenLimit(): number {
-    return this.sessionTokenLimit;
+    if (this.sessionTokenLimit > 0) {
+      return this.sessionTokenLimit;
+    }
+    const dynamicLimit = this.getModelContextWindow();
+    return dynamicLimit ?? this.sessionTokenLimit;
   }
 
   setQuotaErrorOccurred(value: boolean): void {

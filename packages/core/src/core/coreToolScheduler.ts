@@ -270,6 +270,9 @@ export class CoreToolScheduler {
     reject: (reason?: Error) => void;
   }> = [];
 
+  private static readonly DEFAULT_RESET_REASON =
+    'Tool execution was cancelled while recovering from a detected loop.';
+
   constructor(options: CoreToolSchedulerOptions) {
     this.config = options.config;
     this.toolRegistry = options.config.getToolRegistry();
@@ -278,6 +281,40 @@ export class CoreToolScheduler {
     this.onToolCallsUpdate = options.onToolCallsUpdate;
     this.getPreferredEditor = options.getPreferredEditor;
     this.onEditorClose = options.onEditorClose;
+  }
+
+  reset(reason?: string): void {
+    const cancellationReason =
+      reason ?? CoreToolScheduler.DEFAULT_RESET_REASON;
+
+    // Reject any queued scheduling requests so callers can re-issue them later.
+    if (this.requestQueue.length > 0) {
+      const queueError = new Error(
+        'Tool call cancelled while waiting due to scheduler reset.',
+      );
+      for (const queuedRequest of this.requestQueue) {
+        queuedRequest.reject(queueError);
+      }
+      this.requestQueue = [];
+    }
+
+    this.isScheduling = false;
+    this.isFinalizingToolCalls = false;
+
+    const activeCalls = this.toolCalls.filter(
+      (call) =>
+        call.status !== 'success' &&
+        call.status !== 'error' &&
+        call.status !== 'cancelled',
+    );
+
+    for (const call of activeCalls) {
+      this.setStatusInternal(call.request.callId, 'cancelled', cancellationReason);
+    }
+
+    if (activeCalls.length === 0 && this.toolCalls.length > 0) {
+      void this.checkAndNotifyCompletion();
+    }
   }
 
   private setStatusInternal(

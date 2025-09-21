@@ -25,8 +25,8 @@ vi.mock('./shared/RadioButtonSelect.js', () => ({
 
 describe('ModelSelectionDialog', () => {
   const mockAvailableModels: AvailableModel[] = [
-    { id: 'qwen3-coder-plus', label: 'qwen3-coder-plus' },
-    { id: 'qwen-vl-max-latest', label: 'qwen-vl-max', isVision: true },
+    { id: 'qwen3-coder-plus', label: 'qwen3-coder-plus', contextWindow: 131_072 },
+    { id: 'qwen-vl-max-latest', label: 'qwen-vl-max', isVision: true, contextWindow: 262_144 },
     { id: 'gpt-4', label: 'GPT-4' },
   ];
 
@@ -154,11 +154,11 @@ describe('ModelSelectionDialog', () => {
 
     const expectedItems = [
       {
-        label: 'qwen3-coder-plus (current)',
+        label: 'qwen3-coder-plus • 131,072 ctx (current)',
         value: 'qwen3-coder-plus',
       },
       {
-        label: 'qwen-vl-max [Vision]',
+        label: 'qwen-vl-max [Vision] • 262,144 ctx',
         value: 'qwen-vl-max-latest',
       },
       {

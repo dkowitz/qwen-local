@@ -51,7 +51,6 @@ import {
   getCoreSystemPrompt,
   getCustomSystemPrompt,
 } from './prompts.js';
-import { tokenLimit } from './tokenLimits.js';
 import type { ChatCompressionInfo, ServerGeminiStreamEvent } from './turn.js';
 import { CompressionStatus, GeminiEventType, Turn } from './turn.js';
 
@@ -909,10 +908,12 @@ export class GeminiClient {
       this.config.getChatCompression()?.contextPercentageThreshold;
 
     // Don't compress if not forced and we are under the limit.
+    const modelContextLimit = this.config.getEffectiveTokenLimit(model);
+
     if (!force) {
       const threshold =
         contextPercentageThreshold ?? COMPRESSION_TOKEN_THRESHOLD;
-      if (originalTokenCount < threshold * tokenLimit(model)) {
+      if (originalTokenCount < threshold * modelContextLimit) {
         return {
           originalTokenCount,
           newTokenCount: originalTokenCount,

@@ -59,6 +59,7 @@ import {
 } from './components/ModelSwitchDialog.js';
 import {
   fetchOpenAIModels,
+  modelsToMetadata,
   type AvailableModel,
 } from './models/availableModels.js';
 import { processVisionSwitchOutcome } from './hooks/useVisionAutoSwitch.js';
@@ -541,6 +542,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     const fetchAndSetModels = async () => {
       const models = await fetchOpenAIModels();
       setAvailableOpenAIModels(models);
+      config.setDiscoveredModelMetadata(modelsToMetadata(models));
       if (models.length > 0 && !process.env['OPENAI_MODEL']) {
         config.setModel(models[0].id);
         setCurrentModel(models[0].id);
@@ -1665,6 +1667,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
               nightly={nightly}
               vimMode={vimModeEnabled ? vimMode : undefined}
               isTrustedFolder={isTrustedFolderState}
+              contextLimit={config.getEffectiveTokenLimit(currentModel)}
             />
           )}
         </Box>
