@@ -52,6 +52,8 @@ const logger = {
   error: (...args: any[]) => console.error('[ERROR]', ...args),
 };
 
+export type WebSearchProvider = 'duckduckgo' | 'tavily';
+
 export interface CliArgs {
   model: string | undefined;
   sandbox: boolean | string | undefined;
@@ -82,6 +84,7 @@ export interface CliArgs {
   includeDirectories: string[] | undefined;
   tavilyApiKey: string | undefined;
   screenReader: boolean | undefined;
+  webSearchProvider: WebSearchProvider | undefined;
 }
 
 export async function parseArguments(settings: Settings): Promise<CliArgs> {
@@ -244,6 +247,12 @@ export async function parseArguments(settings: Settings): Promise<CliArgs> {
           type: 'string',
           description: 'Tavily API key for web search functionality',
         })
+        .option('web-search-provider', {
+          type: 'string',
+          choices: ['duckduckgo', 'tavily'] as const,
+          description:
+            'Select the default web search provider (DuckDuckGo requires no API key).',
+        })
         .option('screen-reader', {
           type: 'boolean',
           description: 'Enable screen reader mode for accessibility.',
@@ -294,6 +303,10 @@ export async function parseArguments(settings: Settings): Promise<CliArgs> {
   // The import format is now only controlled by settings.memoryImportFormat
   // We no longer accept it as a CLI argument
   return result as unknown as CliArgs;
+}
+
+function isWebSearchProvider(value: unknown): value is WebSearchProvider {
+  return value === 'duckduckgo' || value === 'tavily';
 }
 
 // This function is now a thin wrapper around the server's implementation.
@@ -353,6 +366,26 @@ export async function loadCliConfig(
   const memoryImportFormat = settings.context?.importFormat || 'tree';
 
   const ideMode = settings.ide?.enabled ?? false;
+
+  const tavilyApiKey =
+    argv.tavilyApiKey ||
+    settings.tavilyApiKey ||
+    process.env['TAVILY_API_KEY'];
+
+  const settingsWebSearchProvider = isWebSearchProvider(
+    settings.tools?.webSearch?.provider,
+  )
+    ? settings.tools?.webSearch?.provider
+    : undefined;
+
+  const requestedWebSearchProvider: WebSearchProvider | undefined =
+    argv.webSearchProvider || settingsWebSearchProvider ||
+    (tavilyApiKey ? 'tavily' : undefined);
+
+  const effectiveWebSearchProvider: WebSearchProvider =
+    requestedWebSearchProvider === 'tavily' && !tavilyApiKey
+      ? 'duckduckgo'
+      : requestedWebSearchProvider ?? (tavilyApiKey ? 'tavily' : 'duckduckgo');
 
   const folderTrustFeature =
     settings.security?.folderTrust?.featureEnabled ?? false;
@@ -614,10 +647,9 @@ export async function loadCliConfig(
     authType: settings.security?.auth?.selectedType,
     contentGenerator: settings.contentGenerator,
     cliVersion,
-    tavilyApiKey:
-      argv.tavilyApiKey ||
-      settings.tavilyApiKey ||
-      process.env['TAVILY_API_KEY'],
+    tavilyApiKey,
+    webSearchProvider: effectiveWebSearchProvider,
+    requestedWebSearchProvider,
     summarizeToolOutput: settings.model?.summarizeToolOutput,
     ideMode,
     chatCompression: settings.model?.chatCompression,

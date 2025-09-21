@@ -230,6 +230,8 @@ export interface ConfigParameters {
   loadMemoryFromIncludeDirectories?: boolean;
   // Web search providers
   tavilyApiKey?: string;
+  webSearchProvider?: 'duckduckgo' | 'tavily';
+  requestedWebSearchProvider?: 'duckduckgo' | 'tavily';
   chatCompression?: ChatCompressionSettings;
   interactive?: boolean;
   trustedFolder?: boolean;
@@ -321,6 +323,8 @@ export class Config {
   private readonly experimentalZedIntegration: boolean = false;
   private readonly loadMemoryFromIncludeDirectories: boolean = false;
   private readonly tavilyApiKey?: string;
+  private webSearchProvider: 'duckduckgo' | 'tavily';
+  private readonly requestedWebSearchProvider?: 'duckduckgo' | 'tavily';
   private readonly chatCompression: ChatCompressionSettings | undefined;
   private readonly interactive: boolean;
   private readonly trustedFolder: boolean | undefined;
@@ -418,6 +422,8 @@ export class Config {
 
     // Web search
     this.tavilyApiKey = params.tavilyApiKey;
+    this.webSearchProvider = params.webSearchProvider ?? 'duckduckgo';
+    this.requestedWebSearchProvider = params.requestedWebSearchProvider;
     this.useRipgrep = params.useRipgrep ?? false;
     this.shouldUseNodePtyShell = params.shouldUseNodePtyShell ?? false;
     this.skipNextSpeakerCheck = params.skipNextSpeakerCheck ?? false;
@@ -818,6 +824,21 @@ export class Config {
     return this.tavilyApiKey;
   }
 
+  getWebSearchProvider(): 'duckduckgo' | 'tavily' {
+    return this.webSearchProvider;
+  }
+
+  getRequestedWebSearchProvider():
+    | 'duckduckgo'
+    | 'tavily'
+    | undefined {
+    return this.requestedWebSearchProvider;
+  }
+
+  setWebSearchProvider(provider: 'duckduckgo' | 'tavily'): void {
+    this.webSearchProvider = provider;
+  }
+
   getIdeClient(): IdeClient {
     return this.ideClient;
   }
@@ -1007,10 +1028,7 @@ export class Config {
     registerCoreTool(ShellTool, this);
     registerCoreTool(MemoryTool);
     registerCoreTool(TodoWriteTool, this);
-    // Conditionally register web search tool only if Tavily API key is set
-    if (this.getTavilyApiKey()) {
-      registerCoreTool(WebSearchTool, this);
-    }
+    registerCoreTool(WebSearchTool, this);
 
     await registry.discoverAllTools();
     return registry;

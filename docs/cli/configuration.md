@@ -309,9 +309,13 @@ If you are experiencing performance issues with file searching (e.g., with `@` c
     ```
 
 - **`tavilyApiKey`** (string):
-  - **Description:** API key for Tavily web search service. Required to enable the `web_search` tool functionality. If not configured, the web search tool will be disabled and skipped.
-  - **Default:** `undefined` (web search disabled)
+  - **Description:** API key for the Tavily web search service. When present, the WebSearch tool can use Tavily for richer results.
+  - **Default:** `undefined`
   - **Example:** `"tavilyApiKey": "tvly-your-api-key-here"`
+- **`tools.webSearch.provider`** (string):
+  - **Description:** Selects the default web search backend. Choose `duckduckgo` for a keyless setup or `tavily` when a Tavily key is configured.
+  - **Default:** Automatically set to `duckduckgo` unless a Tavily key is detected.
+  - **Options:** `duckduckgo`, `tavily`
 - **`chatCompression`** (object):
   - **Description:** Controls the settings for chat history compression, both automatic and
     when manually invoked through the /compress command.
@@ -453,8 +457,7 @@ The CLI automatically loads environment variables from an `.env` file. The loadi
   - This is useful for development and testing.
 - **`TAVILY_API_KEY`**:
   - Your API key for the Tavily web search service.
-  - Required to enable the `web_search` tool functionality.
-  - If not configured, the web search tool will be disabled and skipped.
+  - Enables the `web_search` tool to use Tavily. Without this key, the CLI uses DuckDuckGo automatically.
   - Example: `export TAVILY_API_KEY="tvly-your-api-key-here"`
 
 ## Command-Line Arguments
@@ -530,6 +533,9 @@ Arguments passed directly when running the CLI can override other configurations
 - **`--tavily-api-key <api_key>`**:
   - Sets the Tavily API key for web search functionality for this session.
   - Example: `qwen --tavily-api-key tvly-your-api-key-here`
+- **`--web-search-provider <provider>`**:
+  - Overrides the web search provider for the current session (`duckduckgo` or `tavily`).
+  - Example: `qwen --web-search-provider tavily`
 
 ## Context Files (Hierarchical Instructional Context)
 

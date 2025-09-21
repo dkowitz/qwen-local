@@ -121,6 +121,7 @@ import { ShowMoreLines } from './components/ShowMoreLines.js';
 import { PrivacyNotice } from './privacy/PrivacyNotice.js';
 import { useSettingsCommand } from './hooks/useSettingsCommand.js';
 import { SettingsDialog } from './components/SettingsDialog.js';
+import { SearchEngineDialog } from './components/SearchEngineDialog.js';
 import { setUpdateHandler } from '../utils/handleAutoUpdate.js';
 import { appEvents, AppEvent } from '../utils/events.js';
 import { isNarrowWidth } from './utils/isNarrowWidth.js';
@@ -252,6 +253,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
   >();
   const [showEscapePrompt, setShowEscapePrompt] = useState(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const searchFallbackWarnedRef = useRef(false);
   const {
     showWorkspaceMigrationDialog,
     workspaceExtensions,
@@ -264,6 +266,13 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     useState(false);
   const [isVisionSwitchDialogOpen, setIsVisionSwitchDialogOpen] =
     useState(false);
+  const initialSearchEngineProvider =
+    config.getRequestedWebSearchProvider() ?? config.getWebSearchProvider();
+  const [searchEngineDialogInitialProvider, setSearchEngineDialogInitialProvider] =
+    useState<'duckduckgo' | 'tavily'>(initialSearchEngineProvider);
+  const [isSearchEngineDialogOpen, setIsSearchEngineDialogOpen] = useState(
+    settings.merged.tools?.webSearch?.provider === undefined,
+  );
   const [visionSwitchResolver, setVisionSwitchResolver] = useState<{
     resolve: (result: {
       modelOverride?: string;
@@ -302,6 +311,25 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     };
   }, [handleNewMessage]);
 
+  useEffect(() => {
+    if (searchFallbackWarnedRef.current) {
+      return;
+    }
+    const requestedProvider = settings.merged.tools?.webSearch?.provider;
+    const effectiveProvider = config.getWebSearchProvider();
+    const hasTavilyKey = Boolean((config.getTavilyApiKey() || '').trim());
+    if (requestedProvider === 'tavily' && effectiveProvider === 'duckduckgo' && !hasTavilyKey) {
+      searchFallbackWarnedRef.current = true;
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: 'Tavily API key not found. Web search will use DuckDuckGo until a key is configured.',
+        },
+        Date.now(),
+      );
+    }
+  }, [addItem, config, settings.merged.tools?.webSearch?.provider]);
+
   const openPrivacyNotice = useCallback(() => {
     setShowPrivacyNotice(true);
   }, []);
@@ -309,6 +337,67 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
   const handleEscapePromptChange = useCallback((showPrompt: boolean) => {
     setShowEscapePrompt(showPrompt);
   }, []);
+
+  const handleSearchEngineDialogOpen = useCallback(() => {
+    setSearchEngineDialogInitialProvider(
+      config.getRequestedWebSearchProvider() ??
+        config.getWebSearchProvider(),
+    );
+    setIsSearchEngineDialogOpen(true);
+  }, [config]);
+
+  const handleSearchEngineDialogClose = useCallback(() => {
+    if (settings.merged.tools?.webSearch?.provider === undefined) {
+      const defaultProvider =
+        config.getRequestedWebSearchProvider() ??
+        config.getWebSearchProvider();
+      settings.setValue(
+        SettingScope.User,
+        'tools.webSearch.provider',
+        defaultProvider,
+      );
+    }
+    setIsSearchEngineDialogOpen(false);
+  }, [config, settings]);
+
+  const handleSearchEngineSelect = useCallback(
+    (provider: 'duckduckgo' | 'tavily') => {
+      const rawKey = config.getTavilyApiKey();
+      const hasTavilyKey = Boolean(rawKey && rawKey.trim().length > 0);
+
+      const finalProvider =
+        provider === 'tavily' && !hasTavilyKey ? 'duckduckgo' : provider;
+
+      settings.setValue(
+        SettingScope.User,
+        'tools.webSearch.provider',
+        finalProvider,
+      );
+      config.setWebSearchProvider(finalProvider);
+      setSearchEngineDialogInitialProvider(finalProvider);
+      setIsSearchEngineDialogOpen(false);
+
+      if (provider === 'tavily' && !hasTavilyKey) {
+        addItem(
+          {
+            type: MessageType.INFO,
+            text: 'Tavily API key not found. Using DuckDuckGo until a Tavily key is configured (settings → tavilyApiKey or TAVILY_API_KEY env).',
+          },
+          Date.now(),
+        );
+      } else {
+        const label = finalProvider === 'tavily' ? 'Tavily' : 'DuckDuckGo';
+        addItem(
+          {
+            type: MessageType.INFO,
+            text: `Web search provider set to ${label}.`,
+          },
+          Date.now(),
+        );
+      }
+    },
+    [config, settings, addItem],
+  );
 
   const initialPromptSubmitted = useRef(false);
 
@@ -660,6 +749,7 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
     openPrivacyNotice,
     openSettingsDialog,
     handleModelSelectionOpen,
+    handleSearchEngineDialogOpen,
     openSubagentCreateDialog,
     openAgentsManagerDialog,
     toggleVimEnabled,
@@ -1353,6 +1443,17 @@ const App = ({ config, settings, startupWarnings = [], version }: AppProps) => {
                 onSelect={handleAuthSelect}
                 settings={settings}
                 initialErrorMessage={authError}
+              />
+            </Box>
+          ) : isSearchEngineDialogOpen ? (
+            <Box flexDirection="column">
+              <SearchEngineDialog
+                onSelect={handleSearchEngineSelect}
+                onCancel={handleSearchEngineDialogClose}
+                initialProvider={searchEngineDialogInitialProvider}
+                tavilyApiKeyConfigured={Boolean(
+                  (config.getTavilyApiKey() || '').trim().length > 0,
+                )}
               />
             </Box>
           ) : isEditorDialogOpen ? (

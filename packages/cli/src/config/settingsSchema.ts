@@ -487,6 +487,26 @@ export const SETTINGS_SCHEMA = {
     description: 'Settings for built-in and custom tools.',
     showInDialog: false,
     properties: {
+      webSearch: {
+        type: 'object',
+        label: 'Web Search',
+        category: 'Tools',
+        requiresRestart: false,
+        default: {},
+        description: 'Configure the default provider for the WebSearch tool.',
+        showInDialog: false,
+        properties: {
+          provider: {
+            type: 'string',
+            label: 'Web Search Provider',
+            category: 'Tools',
+            requiresRestart: false,
+            default: undefined as string | undefined,
+            description: 'Choose between DuckDuckGo (no API key) or Tavily.',
+            showInDialog: true,
+          },
+        },
+      },
       sandbox: {
         type: 'object',
         label: 'Sandbox',

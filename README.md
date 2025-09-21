@@ -54,6 +54,7 @@ For detailed setup instructions, see [Authorization](#authorization).
 - **Code Understanding & Editing** - Query and edit large codebases beyond traditional context window limits
 - **Workflow Automation** - Automate operational tasks like handling pull requests and complex rebases
 - **Enhanced Parser** - Adapted parser specifically optimized for Qwen-Coder models
+- **Local Web Search** - Run `/search` using DuckDuckGo out of the box, or switch to Tavily with an API key for richer answers
 
 ## Installation
 
@@ -120,6 +121,11 @@ Create or edit `.qwen/settings.json` in your home directory:
 - **`/stats`** - Check current token usage and limits
 
 > 📝 **Note**: Session token limit applies to a single conversation, not cumulative API calls.
+
+### Web Search
+
+- **`/search <query>`** - Run a web search using the configured provider (DuckDuckGo by default).
+- **`/search-engine`** - Open a quick selector to switch between DuckDuckGo and Tavily (requires a Tavily API key).
 
 ### Authorization
 

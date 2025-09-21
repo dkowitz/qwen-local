@@ -153,6 +153,14 @@ Slash commands provide meta-level control over the CLI itself.
 - **`/privacy`**
   - **Description:** Display the Privacy Notice and allow users to select whether they consent to the collection of their data for service improvement purposes.
 
+- **`/search`**
+  - **Description:** Run the WebSearch tool with the configured provider (DuckDuckGo by default, Tavily when available).
+  - **Usage:** `/search <query>`
+
+- **`/search-engine`**
+  - **Description:** Open a dialog to choose the default web search provider.
+  - **Usage:** `/search-engine`
+
 - **`/quit-confirm`**
   - **Description:** Show a confirmation dialog before exiting Qwen Code, allowing you to choose how to handle your current session.
   - **Usage:** `/quit-confirm`
