@@ -31,6 +31,7 @@ import {
   ConversationFinishedEvent,
   ApprovalMode,
   parseAndFormatApiError,
+  RetryExhaustedError,
 } from '@qwen-code/qwen-code-core';
 import { type Part, type PartListUnion, FinishReason } from '@google/genai';
 import type {
@@ -82,11 +83,30 @@ const LOOP_RECOVERY_MAX_ATTEMPTS = Number.parseInt(
   process.env['QWEN_LOOP_RECOVERY_LIMIT'] ?? '',
   10,
 ) || 1;
+const PROVIDER_RECOVERY_MAX_ATTEMPTS = Number.parseInt(
+  process.env['QWEN_PROVIDER_RECOVERY_LIMIT'] ?? '',
+  10,
+) || 1;
+const LIMIT_RECOVERY_MAX_ATTEMPTS = Number.parseInt(
+  process.env['QWEN_LIMIT_RECOVERY_LIMIT'] ?? '',
+  10,
+) || 1;
+const FINISH_RECOVERY_MAX_ATTEMPTS = Number.parseInt(
+  process.env['QWEN_FINISH_RECOVERY_LIMIT'] ?? '',
+  10,
+) || 1;
 
 type HistoryEntry = HistoryItem | HistoryItemWithoutId;
 type SubmitQueryOptions = {
   isContinuation: boolean;
   skipLoopRecoveryReset?: boolean;
+  skipProviderRecoveryReset?: boolean;
+  skipLimitRecoveryReset?: boolean;
+  skipFinishRecoveryReset?: boolean;
+};
+type RetryExhaustedErrorLike = RetryExhaustedError & {
+  attempts: number;
+  errorCodes: string[];
 };
 
 function truncateForLoopSummary(text: string | undefined, maxLength = 280): string {
@@ -100,7 +120,7 @@ function truncateForLoopSummary(text: string | undefined, maxLength = 280): stri
   return `${normalized.slice(0, maxLength - 1)}…`;
 }
 
-function buildLoopRecoverySummary(
+function buildContextSnapshot(
   history: HistoryItem[],
   pendingHistoryItem: HistoryItemWithoutId | null,
 ): string {
@@ -131,9 +151,9 @@ function buildLoopRecoverySummary(
   const summarySegments: string[] = [];
 
   if (lastUserEntry?.text) {
-    summarySegments.push(
-      `Last user request: ${truncateForLoopSummary(lastUserEntry.text)}`,
-    );
+      summarySegments.push(
+        `Last user request: ${truncateForLoopSummary(lastUserEntry.text)}`,
+      );
   }
 
   if (lastAssistantEntry?.text) {
@@ -171,6 +191,114 @@ function buildLoopRecoveryPrompt(summary: string, attempt: number): string {
   if (attempt > 1) {
     promptSections.push(
       'This is an additional recovery attempt. Take a different approach immediately and be explicit about what changed.',
+    );
+  }
+
+  return promptSections.filter(Boolean).join('\n\n');
+}
+
+function buildProviderFailurePrompt(
+  summary: string,
+  attempt: number,
+  descriptor: string,
+): string {
+  const promptSections = [
+    `System notice: The previous assistant turn failed repeatedly due to network or provider errors${
+      descriptor ? ` ${descriptor}` : ''
+    }. The chat session was reset to recover.`,
+    summary ? `Recent context snapshot:\n${summary}` : undefined,
+    'Reconfirm recent progress, outline the next concrete action, and choose a different strategy that reduces the chance of triggering the same failure (smaller tool inputs, shorter outputs, or staggered steps).',
+  ];
+
+  if (attempt > 1) {
+    promptSections.push(
+      'This is an additional recovery attempt. Change tactics immediately and explain what is different before proceeding.',
+    );
+  }
+
+  return promptSections.filter(Boolean).join('\n\n');
+}
+
+function buildSessionLimitRecoveryPrompt(
+  summary: string,
+  attempt: number,
+  limit: number,
+  current: number,
+): string {
+  const promptSections = [
+    `System notice: The previous turn was halted after exceeding the session token budget (${current.toLocaleString()} / ${limit.toLocaleString()}). The tool scheduler was reset to unblock progress.`,
+    summary ? `Recent context snapshot:\n${summary}` : undefined,
+    'Reconstruct the minimal context needed to continue, confirm what was last completed, and resume using concise steps. Prefer referencing prior work instead of repeating large outputs. Use /compress or produce summarized references before invoking tools again.',
+  ];
+
+  if (attempt > 1) {
+    promptSections.push(
+      'This is an additional recovery attempt. Switch to a tighter strategy immediately (smaller batches, more summaries, or checkpoints) before proceeding.',
+    );
+  }
+
+  return promptSections.filter(Boolean).join('\n\n');
+}
+
+function buildTurnLimitRecoveryPrompt(
+  summary: string,
+  attempt: number,
+  maxTurns: number,
+): string {
+  const promptSections = [
+    `System notice: The session reached the configured turn cap (${maxTurns}). Pending tool activity was cancelled so the workflow can resume safely.`,
+    summary ? `Recent context snapshot:\n${summary}` : undefined,
+    'Summarize what remains, decide whether to finish the task or create a fresh session, and continue with the highest-priority next action.',
+  ];
+
+  if (attempt > 1) {
+    promptSections.push(
+      'This is an additional recovery attempt. Consolidate open threads, close out redundant loops, and proceed only with the essential steps.',
+    );
+  }
+
+  return promptSections.filter(Boolean).join('\n\n');
+}
+
+const FINISH_REASON_RECOVERY_GUIDANCE: Partial<Record<FinishReason, string>> = {
+  [FinishReason.MAX_TOKENS]:
+    'Resume from the last complete point but keep outputs short. Split long responses into numbered follow-ups or delegate subtasks so no single reply approaches the limit.',
+  [FinishReason.MALFORMED_FUNCTION_CALL]:
+    'Audit the most recent tool call arguments, correct the schema, and reissue the call. Double-check parameter names and required fields before retrying.',
+  [FinishReason.SAFETY]:
+    'Restate the plan with a safe framing, acknowledge the restriction, and offer compliant alternative steps before continuing.',
+  [FinishReason.PROHIBITED_CONTENT]:
+    'Remove any restricted content from the approach, explain the adjustment, and provide a compliant alternative path to advance the task.',
+  [FinishReason.RECITATION]:
+    'Provide an original summary or explanation instead of quoting large passages. Reference sources qualitatively and keep excerpts short.',
+  [FinishReason.BLOCKLIST]:
+    'Avoid the blocked terms, clarify the constraint to the user, and proceed with acceptable terminology.',
+  [FinishReason.IMAGE_SAFETY]:
+    'Skip generating the blocked image content and outline safe next steps or alternative representations.',
+  [FinishReason.OTHER]:
+    'Clarify what prevented completion, adjust the strategy, and continue with a revised plan.',
+};
+
+function buildFinishReasonRecoveryPrompt(
+  summary: string,
+  reason: FinishReason,
+  attempt: number,
+): string {
+  const guidance = FINISH_REASON_RECOVERY_GUIDANCE[reason];
+  if (!guidance) {
+    return '';
+  }
+
+  const reasonLabel = FinishReason[reason] ?? 'UNKNOWN';
+  const promptSections = [
+    `System notice: The previous response ended early because of ${reasonLabel}.`,
+    summary ? `Recent context snapshot:\n${summary}` : undefined,
+    guidance,
+  ];
+
+  if (attempt > 1) {
+    promptSections.push(
+      'This is an additional recovery attempt. Change tactics immediately and justify how the new plan avoids the same stop condition.',
     );
   }
 
@@ -218,9 +346,15 @@ export const useGeminiStream = (
       timestamp: number;
       isContinuation?: boolean;
       skipLoopReset?: boolean;
+      skipProviderReset?: boolean;
+      skipLimitReset?: boolean;
+      skipFinishReset?: boolean;
     } | null
   >(null);
   const loopRecoveryAttemptsRef = useRef(0);
+  const providerFailureRecoveryAttemptsRef = useRef(0);
+  const limitRecoveryAttemptsRef = useRef(0);
+  const finishRecoveryAttemptsRef = useRef(0);
   const [isResponding, setIsResponding] = useState<boolean>(false);
   const [thought, setThought] = useState<ThoughtSummary | null>(null);
   const [pendingHistoryItemRef, setPendingHistoryItem] =
@@ -624,7 +758,11 @@ export const useGeminiStream = (
   );
 
   const handleFinishedEvent = useCallback(
-    (event: ServerGeminiFinishedEvent, userMessageTimestamp: number) => {
+    (
+      event: ServerGeminiFinishedEvent,
+      userMessageTimestamp: number,
+      promptId: string,
+    ) => {
       const finishReason = event.value;
 
       const finishReasonMessages: Record<FinishReason, string | undefined> = {
@@ -659,8 +797,73 @@ export const useGeminiStream = (
           userMessageTimestamp,
         );
       }
+
+      if (pendingAutoRecoveryRef.current) {
+        return;
+      }
+
+      const guidance = FINISH_REASON_RECOVERY_GUIDANCE[finishReason];
+      if (!guidance) {
+        return;
+      }
+
+      if (finishRecoveryAttemptsRef.current >= FINISH_RECOVERY_MAX_ATTEMPTS) {
+        addItem(
+          {
+            type: MessageType.ERROR,
+            text: 'Automatic recovery was skipped because finish-reason recovery already ran during this prompt. Please intervene manually.',
+          },
+          userMessageTimestamp,
+        );
+        return;
+      }
+
+      const summary = buildContextSnapshot(
+        history,
+        pendingHistoryItemRef.current,
+      );
+
+      const attemptNumber = finishRecoveryAttemptsRef.current + 1;
+      finishRecoveryAttemptsRef.current = attemptNumber;
+
+      const recoveryPromptText = buildFinishReasonRecoveryPrompt(
+        summary,
+        finishReason,
+        attemptNumber,
+      );
+
+      if (!recoveryPromptText) {
+        return;
+      }
+
+      const recoveryPromptId = `${promptId}-finish-recovery-${attemptNumber}`;
+
+      pendingAutoRecoveryRef.current = {
+        promptId: recoveryPromptId,
+        query: [{ text: recoveryPromptText }],
+        timestamp: userMessageTimestamp,
+        isContinuation: false,
+        skipLoopReset: true,
+        skipProviderReset: true,
+        skipLimitReset: true,
+        skipFinishReset: true,
+      };
+
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: 'Attempting automatic recovery after the model stopped early...',
+        },
+        userMessageTimestamp,
+      );
     },
-    [addItem],
+    [
+      addItem,
+      pendingAutoRecoveryRef,
+      history,
+      pendingHistoryItemRef,
+      finishRecoveryAttemptsRef,
+    ],
   );
 
   const handleChatCompressionEvent = useCallback(
@@ -680,7 +883,8 @@ export const useGeminiStream = (
   );
 
   const handleMaxSessionTurnsEvent = useCallback(
-    () =>
+    (promptId: string, userMessageTimestamp: number): StreamProcessingStatus | null => {
+      const timestamp = Date.now();
       addItem(
         {
           type: 'info',
@@ -688,13 +892,86 @@ export const useGeminiStream = (
             `The session has reached the maximum number of turns: ${config.getMaxSessionTurns()}. ` +
             `Please update this limit in your setting.json file.`,
         },
-        Date.now(),
-      ),
-    [addItem, config],
+        timestamp,
+      );
+
+      abortControllerRef.current?.abort();
+      resetToolScheduler('Turn limit reached. Scheduler reset for recovery.');
+      setPendingHistoryItem(null);
+      setThought(null);
+
+      if (pendingAutoRecoveryRef.current) {
+        return StreamProcessingStatus.Error;
+      }
+
+      if (limitRecoveryAttemptsRef.current >= LIMIT_RECOVERY_MAX_ATTEMPTS) {
+        addItem(
+          {
+            type: MessageType.ERROR,
+            text: 'Automatic recovery was skipped because turn-limit recovery already ran during this prompt. Please intervene manually.',
+          },
+          timestamp,
+        );
+        return StreamProcessingStatus.Error;
+      }
+
+      const summary = buildContextSnapshot(
+        history,
+        pendingHistoryItemRef.current,
+      );
+
+      const attemptNumber = limitRecoveryAttemptsRef.current + 1;
+      limitRecoveryAttemptsRef.current = attemptNumber;
+
+      const recoveryPromptId = `${promptId}-turn-limit-recovery-${attemptNumber}`;
+      const recoveryPromptText = buildTurnLimitRecoveryPrompt(
+        summary,
+        attemptNumber,
+        config.getMaxSessionTurns(),
+      );
+
+      pendingAutoRecoveryRef.current = {
+        promptId: recoveryPromptId,
+        query: [{ text: recoveryPromptText }],
+        timestamp: userMessageTimestamp,
+        isContinuation: false,
+        skipLoopReset: true,
+        skipProviderReset: true,
+        skipLimitReset: true,
+        skipFinishReset: true,
+      };
+
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: 'Attempting automatic recovery after hitting the turn limit...',
+        },
+        timestamp,
+      );
+
+      return StreamProcessingStatus.Error;
+    },
+    [
+      addItem,
+      config,
+      history,
+      pendingHistoryItemRef,
+      resetToolScheduler,
+      pendingAutoRecoveryRef,
+      limitRecoveryAttemptsRef,
+      abortControllerRef,
+      setPendingHistoryItem,
+      setThought,
+    ],
   );
 
   const handleSessionTokenLimitExceededEvent = useCallback(
-    (value: { currentTokens: number; limit: number; message: string }) =>
+    (
+      value: { currentTokens: number; limit: number; message: string },
+      promptId: string,
+      userMessageTimestamp: number,
+    ): StreamProcessingStatus | null => {
+      const timestamp = Date.now();
       addItem(
         {
           type: 'error',
@@ -705,15 +982,201 @@ export const useGeminiStream = (
             `   • Increase limit: Add "sessionTokenLimit": (e.g., 128000) to your settings.json\n` +
             `   • Compress history: Use /compress command to compress history`,
         },
-        Date.now(),
-      ),
-    [addItem],
+        timestamp,
+      );
+
+      abortControllerRef.current?.abort();
+      resetToolScheduler('Session token limit triggered automatic recovery.');
+      setPendingHistoryItem(null);
+      setThought(null);
+
+      if (pendingAutoRecoveryRef.current) {
+        return StreamProcessingStatus.Error;
+      }
+
+      if (limitRecoveryAttemptsRef.current >= LIMIT_RECOVERY_MAX_ATTEMPTS) {
+        addItem(
+          {
+            type: MessageType.ERROR,
+            text: 'Automatic recovery was skipped because token-limit recovery already ran during this prompt. Please intervene manually.',
+          },
+          timestamp,
+        );
+        return StreamProcessingStatus.Error;
+      }
+
+      const summary = buildContextSnapshot(
+        history,
+        pendingHistoryItemRef.current,
+      );
+
+      const attemptNumber = limitRecoveryAttemptsRef.current + 1;
+      limitRecoveryAttemptsRef.current = attemptNumber;
+
+      const recoveryPromptId = `${promptId}-token-limit-recovery-${attemptNumber}`;
+      const recoveryPromptText = buildSessionLimitRecoveryPrompt(
+        summary,
+        attemptNumber,
+        value.limit,
+        value.currentTokens,
+      );
+
+      pendingAutoRecoveryRef.current = {
+        promptId: recoveryPromptId,
+        query: [{ text: recoveryPromptText }],
+        timestamp: userMessageTimestamp,
+        isContinuation: false,
+        skipLoopReset: true,
+        skipProviderReset: true,
+        skipLimitReset: true,
+        skipFinishReset: true,
+      };
+
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: 'Attempting automatic recovery after session token overflow...',
+        },
+        timestamp,
+      );
+
+      return StreamProcessingStatus.Error;
+    },
+    [
+      addItem,
+      resetToolScheduler,
+      pendingAutoRecoveryRef,
+      limitRecoveryAttemptsRef,
+      history,
+      pendingHistoryItemRef,
+      setPendingHistoryItem,
+      setThought,
+      abortControllerRef,
+    ],
+  );
+
+  const handleProviderFailureRecovery = useCallback(
+    async (
+      error: RetryExhaustedErrorLike,
+      promptId: string,
+      timestamp: number,
+    ) => {
+      const summary = buildContextSnapshot(
+        history,
+        pendingHistoryItemRef.current,
+      );
+
+      abortControllerRef.current?.abort();
+      resetToolScheduler('Provider failure triggered automatic recovery.');
+      setPendingHistoryItem(null);
+      setThought(null);
+
+      const descriptorParts: string[] = [];
+      if (typeof error.status === 'number') {
+        descriptorParts.push(`status ${error.status}`);
+      }
+      if (error.errorCodes.length > 0) {
+        descriptorParts.push(`codes ${error.errorCodes.join(', ')}`);
+      }
+      const descriptor = descriptorParts.length
+        ? ` (${descriptorParts.join(', ')})`
+        : '';
+
+      const infoSegments = [
+        `⚠️ Provider request failed ${error.attempts} time${
+          error.attempts === 1 ? '' : 's'
+        }${descriptor}.`,
+        error.lastError?.message
+          ? `Last error: ${error.lastError.message}`
+          : undefined,
+        summary ? `Recovery snapshot:\n${summary}` : undefined,
+      ].filter(Boolean);
+
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: infoSegments.join('\n\n'),
+        },
+        timestamp,
+      );
+
+      let resetSucceeded = true;
+      try {
+        await geminiClient.resetChat();
+      } catch (resetError) {
+        resetSucceeded = false;
+        addItem(
+          {
+            type: MessageType.ERROR,
+            text: `Failed to reset chat after provider failure: ${getErrorMessage(resetError)}`,
+          },
+          Date.now(),
+        );
+      }
+
+      if (!resetSucceeded || pendingAutoRecoveryRef.current) {
+        return;
+      }
+
+      if (
+        providerFailureRecoveryAttemptsRef.current >=
+        PROVIDER_RECOVERY_MAX_ATTEMPTS
+      ) {
+        addItem(
+          {
+            type: MessageType.ERROR,
+            text: 'Automatic recovery was skipped because provider failures have already triggered a recovery attempt during this turn. Please intervene manually.',
+          },
+          timestamp,
+        );
+        return;
+      }
+
+      providerFailureRecoveryAttemptsRef.current += 1;
+      const attemptNumber = providerFailureRecoveryAttemptsRef.current;
+      const promptDescriptor = descriptorParts.join(', ');
+      const recoveryPromptText = buildProviderFailurePrompt(
+        summary,
+        attemptNumber,
+        promptDescriptor,
+      );
+      const recoveryPromptId = `${promptId}-provider-recovery-${attemptNumber}`;
+
+      pendingAutoRecoveryRef.current = {
+        promptId: recoveryPromptId,
+        query: [{ text: recoveryPromptText }],
+        timestamp,
+        isContinuation: false,
+        skipLoopReset: true,
+        skipProviderReset: true,
+      };
+
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: 'Attempting automatic recovery after repeated provider failures...',
+        },
+        timestamp,
+      );
+    },
+    [
+      history,
+      addItem,
+      pendingHistoryItemRef,
+      abortControllerRef,
+      resetToolScheduler,
+      setPendingHistoryItem,
+      setThought,
+      geminiClient,
+      pendingAutoRecoveryRef,
+      providerFailureRecoveryAttemptsRef,
+    ],
   );
 
   const handleLoopDetectedEvent = useCallback(
     (promptId: string) => {
       const timestamp = Date.now();
-      const summary = buildLoopRecoverySummary(
+      const summary = buildContextSnapshot(
         history,
         pendingHistoryItemRef.current,
       );
@@ -823,15 +1286,33 @@ export const useGeminiStream = (
             // do nothing
             break;
           case ServerGeminiEventType.MaxSessionTurns:
-            handleMaxSessionTurnsEvent();
-            break;
+            {
+              const status = handleMaxSessionTurnsEvent(
+                promptId,
+                userMessageTimestamp,
+              );
+              if (status !== null) {
+                return status;
+              }
+              break;
+            }
           case ServerGeminiEventType.SessionTokenLimitExceeded:
-            handleSessionTokenLimitExceededEvent(event.value);
-            break;
+            {
+              const status = handleSessionTokenLimitExceededEvent(
+                event.value,
+                promptId,
+                userMessageTimestamp,
+              );
+              if (status !== null) {
+                return status;
+              }
+              break;
+            }
           case ServerGeminiEventType.Finished:
             handleFinishedEvent(
               event as ServerGeminiFinishedEvent,
               userMessageTimestamp,
+              promptId,
             );
             break;
           case ServerGeminiEventType.LoopDetected:
@@ -906,6 +1387,7 @@ export const useGeminiStream = (
       handleMaxSessionTurnsEvent,
       handleSessionTokenLimitExceededEvent,
       addItem,
+      pendingHistoryItemRef,
       setPendingHistoryItem,
       setThought,
     ],
@@ -981,6 +1463,15 @@ export const useGeminiStream = (
         if (!options?.skipLoopRecoveryReset) {
           loopRecoveryAttemptsRef.current = 0;
         }
+        if (!options?.skipProviderRecoveryReset) {
+          providerFailureRecoveryAttemptsRef.current = 0;
+        }
+        if (!options?.skipLimitRecoveryReset) {
+          limitRecoveryAttemptsRef.current = 0;
+        }
+        if (!options?.skipFinishRecoveryReset) {
+          finishRecoveryAttemptsRef.current = 0;
+        }
         pendingAutoRecoveryRef.current = null;
         startNewPrompt();
         setThought(null); // Reset thought when starting a new prompt
@@ -1033,6 +1524,12 @@ export const useGeminiStream = (
 
         if (error instanceof UnauthorizedError) {
           onAuthError();
+        } else if (isRetryExhaustedProviderError(error) && prompt_id) {
+          await handleProviderFailureRecovery(
+            error,
+            prompt_id,
+            userMessageTimestamp,
+          );
         } else if (!isNodeError(error) || error.name !== 'AbortError') {
           addItem(
             {
@@ -1051,23 +1548,33 @@ export const useGeminiStream = (
       } finally {
         setIsResponding(false);
         isSubmittingQueryRef.current = false;
-      const pendingRecovery = pendingAutoRecoveryRef.current;
-      if (pendingRecovery) {
-        pendingAutoRecoveryRef.current = null;
-        queueMicrotask(() => {
-          const continuationFlag =
-            pendingRecovery.isContinuation ?? true;
-          const skipLoopRecoveryReset = pendingRecovery.skipLoopReset ?? false;
-          void submitQuery(
-            pendingRecovery.query,
-            {
-              isContinuation: continuationFlag,
-              skipLoopRecoveryReset,
-            },
-            pendingRecovery.promptId,
-          );
-        });
-      }
+        const pendingRecovery = pendingAutoRecoveryRef.current;
+        if (pendingRecovery) {
+          pendingAutoRecoveryRef.current = null;
+          queueMicrotask(() => {
+            const continuationFlag =
+              pendingRecovery.isContinuation ?? true;
+            const skipLoopRecoveryReset =
+              pendingRecovery.skipLoopReset ?? false;
+            const skipProviderRecoveryReset =
+              pendingRecovery.skipProviderReset ?? false;
+            const skipLimitRecoveryReset =
+              pendingRecovery.skipLimitReset ?? false;
+            const skipFinishRecoveryReset =
+              pendingRecovery.skipFinishReset ?? false;
+            void submitQuery(
+              pendingRecovery.query,
+              {
+                isContinuation: continuationFlag,
+                skipLoopRecoveryReset,
+                skipProviderRecoveryReset,
+                skipLimitRecoveryReset,
+                skipFinishRecoveryReset,
+              },
+              pendingRecovery.promptId,
+            );
+          });
+        }
       }
     },
     [
@@ -1087,6 +1594,7 @@ export const useGeminiStream = (
       handleLoopDetectedEvent,
       handleVisionSwitch,
       restoreOriginalModel,
+      handleProviderFailureRecovery,
     ],
   );
 
@@ -1349,3 +1857,21 @@ export const useGeminiStream = (
     cancelOngoingRequest,
   };
 };
+function isRetryExhaustedProviderError(
+  error: unknown,
+): error is RetryExhaustedErrorLike {
+  if (error instanceof RetryExhaustedError) {
+    return true;
+  }
+  if (typeof error === 'object' && error !== null) {
+    const maybe = error as {
+      attempts?: unknown;
+      errorCodes?: unknown;
+    };
+    return (
+      typeof maybe.attempts === 'number' &&
+      Array.isArray(maybe.errorCodes)
+    );
+  }
+  return false;
+}

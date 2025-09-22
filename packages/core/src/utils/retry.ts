@@ -10,6 +10,31 @@ import {
   isGenericQuotaExceededError,
 } from './quotaErrorDetection.js';
 
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+  'ECONNRESET',
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNFAILED',
+  'EHOSTUNREACH',
+  'EPIPE',
+  'ENETDOWN',
+  'ENETRESET',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+]);
+
+const TRANSIENT_NETWORK_ERROR_MESSAGES = [
+  'socket hang up',
+  'fetch failed',
+  'network error',
+  'tls handshake timeout',
+  'client network socket disconnected',
+  'temporary failure in name resolution',
+  'timed out',
+];
+
 export interface HttpError extends Error {
   status?: number;
 }
@@ -26,12 +51,99 @@ export interface RetryOptions {
   authType?: string;
 }
 
+export interface RetryExhaustedDetails {
+  attempts: number;
+  status?: number;
+  errorCodes: string[];
+}
+
+export class RetryExhaustedError extends Error {
+  readonly attempts: number;
+  readonly status?: number;
+  readonly errorCodes: string[];
+  readonly lastError: Error;
+
+  constructor(lastError: Error, details: RetryExhaustedDetails) {
+    const statusSuffix =
+      details.status !== undefined ? ` (status ${details.status})` : '';
+    super(
+      `Retry attempts exhausted after ${details.attempts} tries${statusSuffix}. ${lastError.message}`,
+    );
+    this.name = 'RetryExhaustedError';
+    this.attempts = details.attempts;
+    this.status = details.status;
+    this.errorCodes = [...details.errorCodes];
+    this.lastError = lastError;
+    (this as { cause?: Error }).cause = lastError;
+  }
+}
+
+export function isRetryExhaustedError(error: unknown): error is RetryExhaustedError {
+  return error instanceof RetryExhaustedError;
+}
+
 const DEFAULT_RETRY_OPTIONS: RetryOptions = {
   maxAttempts: 5,
   initialDelayMs: 5000,
   maxDelayMs: 30000, // 30 seconds
   shouldRetry: defaultShouldRetry,
 };
+
+function collectErrorChain(error: unknown): Error[] {
+  const chain: Error[] = [];
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  while (current && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+    if (current instanceof Error) {
+      chain.push(current);
+      current = (current as { cause?: unknown }).cause;
+    } else if ('cause' in (current as { cause?: unknown })) {
+      current = (current as { cause?: unknown }).cause;
+    } else {
+      break;
+    }
+  }
+  return chain;
+}
+
+function getErrorCodes(error: unknown): string[] {
+  const codes = new Set<string>();
+  for (const err of collectErrorChain(error)) {
+    const potentialCodes = [
+      (err as { code?: unknown }).code,
+      (err as { errno?: unknown }).errno,
+    ];
+    for (const code of potentialCodes) {
+      if (typeof code === 'string') {
+        codes.add(code.toUpperCase());
+      }
+    }
+  }
+  return [...codes];
+}
+
+export function isTransientNetworkError(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+  if (error instanceof Error && error.name === 'AbortError') {
+    return false;
+  }
+  const codes = getErrorCodes(error);
+  if (codes.some((code) => TRANSIENT_NETWORK_ERROR_CODES.has(code))) {
+    return true;
+  }
+  for (const err of collectErrorChain(error)) {
+    if (typeof err.message === 'string') {
+      const normalized = err.message.toLowerCase();
+      if (TRANSIENT_NETWORK_ERROR_MESSAGES.some((fragment) => normalized.includes(fragment))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 /**
  * Default predicate function to determine if a retry should be attempted.
@@ -50,6 +162,9 @@ function defaultShouldRetry(error: Error | unknown): boolean {
   if (error instanceof Error && error.message) {
     if (error.message.includes('429')) return true;
     if (error.message.match(/5\d{2}/)) return true;
+  }
+  if (isTransientNetworkError(error)) {
+    return true;
   }
   return false;
 }
@@ -182,7 +297,15 @@ export async function retryWithBackoff<T>(
       }
 
       // Check if we've exhausted retries or shouldn't retry
-      if (attempt >= maxAttempts || !shouldRetry(error as Error)) {
+      const shouldRetryCurrent = shouldRetry(error as Error);
+      if (attempt >= maxAttempts || !shouldRetryCurrent) {
+        if (attempt >= maxAttempts && error instanceof Error) {
+          throw new RetryExhaustedError(error, {
+            attempts: attempt,
+            status: errorStatus,
+            errorCodes: getErrorCodes(error),
+          });
+        }
         throw error;
       }
 
@@ -211,7 +334,10 @@ export async function retryWithBackoff<T>(
   }
   // This line should theoretically be unreachable due to the throw in the catch block.
   // Added for type safety and to satisfy the compiler that a promise is always returned.
-  throw new Error('Retry attempts exhausted');
+  throw new RetryExhaustedError(new Error('Retry attempts exhausted'), {
+    attempts: 0,
+    errorCodes: [],
+  });
 }
 
 /**

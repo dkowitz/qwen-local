@@ -7,7 +7,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { HttpError } from './retry.js';
-import { retryWithBackoff } from './retry.js';
+import {
+  retryWithBackoff,
+  RetryExhaustedError,
+  isTransientNetworkError,
+} from './retry.js';
 import { setSimulate429 } from './testUtils.js';
 
 // Helper to create a mock function that fails a certain number of times
@@ -43,6 +47,7 @@ describe('retryWithBackoff', () => {
     setSimulate429(false);
     // Suppress unhandled promise rejection warnings for tests that expect errors
     console.warn = vi.fn();
+    console.error = vi.fn();
   });
 
   afterEach(() => {
@@ -74,28 +79,17 @@ describe('retryWithBackoff', () => {
   it('should throw an error if all attempts fail', async () => {
     const mockFn = createFailingFunction(3);
 
-    // 1. Start the retryable operation, which returns a promise.
     const promise = retryWithBackoff(mockFn, {
       maxAttempts: 3,
       initialDelayMs: 10,
     });
 
-    // 2. IMPORTANT: Attach the rejection expectation to the promise *immediately*.
-    //    This ensures a 'catch' handler is present before the promise can reject.
-    //    The result is a new promise that resolves when the assertion is met.
-    // eslint-disable-next-line vitest/valid-expect
-    const assertionPromise = expect(promise).rejects.toThrow(
-      'Simulated error attempt 3',
-    );
-
-    // 3. Now, advance the timers. This will trigger the retries and the
-    //    eventual rejection. The handler attached in step 2 will catch it.
+    const resultPromise = promise.catch((error) => error);
     await vi.runAllTimersAsync();
+    const result = await resultPromise;
 
-    // 4. Await the assertion promise itself to ensure the test was successful.
-    await assertionPromise;
-
-    // 5. Finally, assert the number of calls.
+    expect(result).toBeInstanceOf(RetryExhaustedError);
+    expect(result).toMatchObject({ attempts: 3, lastError: expect.any(Error) });
     expect(mockFn).toHaveBeenCalledTimes(3);
   });
 
@@ -126,16 +120,12 @@ describe('retryWithBackoff', () => {
       initialDelayMs: 10,
     });
 
-    // Attach the rejection expectation *before* running timers
-    const assertionPromise =
-      expect(promise).rejects.toThrow('Too Many Requests'); // eslint-disable-line vitest/valid-expect
-
-    // Run timers to trigger retries and eventual rejection
+    const resultPromise = promise.catch((error) => error);
     await vi.runAllTimersAsync();
+    const result = await resultPromise;
 
-    // Await the assertion
-    await assertionPromise;
-
+    expect(result).toBeInstanceOf(RetryExhaustedError);
+    expect(result).toMatchObject({ attempts: 2, status: 429 });
     expect(mockFn).toHaveBeenCalledTimes(2);
   });
 
@@ -237,6 +227,43 @@ describe('retryWithBackoff', () => {
     });
   });
 
+  it('recognises common network errors as transient', () => {
+    const networkError = new Error('socket hang up');
+    (networkError as any).code = 'ECONNRESET';
+    expect(isTransientNetworkError(networkError)).toBe(true);
+
+    const causeError = new Error('Request failed with timeout');
+    (causeError as any).code = 'ETIMEDOUT';
+    const wrapped = new Error('fetch failed');
+    (wrapped as any).cause = causeError;
+    expect(isTransientNetworkError(wrapped)).toBe(true);
+
+    const abortError = new Error('Manually aborted request');
+    abortError.name = 'AbortError';
+    expect(isTransientNetworkError(abortError)).toBe(false);
+  });
+
+  it('retries on transient network failures and surfaces RetryExhaustedError when exhausted', async () => {
+    const mockFn = vi.fn(async () => {
+      const error = new Error('socket hang up');
+      (error as any).code = 'ECONNRESET';
+      throw error;
+    });
+
+    const promise = retryWithBackoff(mockFn, {
+      maxAttempts: 2,
+      initialDelayMs: 10,
+    });
+
+    const resultPromise = promise.catch((error) => error);
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+
+    expect(result).toBeInstanceOf(RetryExhaustedError);
+    expect(result).toMatchObject({ attempts: 2, errorCodes: ['ECONNRESET'] });
+    expect(mockFn).toHaveBeenCalledTimes(2);
+  });
+
   describe('Flash model fallback for OAuth users', () => {
     it('should trigger fallback for OAuth personal users after persistent 429 errors', async () => {
       const fallbackCallback = vi.fn().mockResolvedValue('gemini-2.5-flash');
@@ -296,8 +323,8 @@ describe('retryWithBackoff', () => {
       const result = await resultPromise;
 
       // Should fail after all retries without fallback
-      expect(result).toBeInstanceOf(Error);
-      expect(result.message).toBe('Rate limit exceeded');
+      expect(result).toBeInstanceOf(RetryExhaustedError);
+      expect(result.message).toContain('Rate limit exceeded');
 
       // Callback should not be called for API key users
       expect(fallbackCallback).not.toHaveBeenCalled();
@@ -354,8 +381,8 @@ describe('retryWithBackoff', () => {
       const result = await resultPromise;
 
       // Should fail with original error when fallback is rejected
-      expect(result).toBeInstanceOf(Error);
-      expect(result.message).toBe('Rate limit exceeded');
+      expect(result).toBeInstanceOf(RetryExhaustedError);
+      expect(result.message).toContain('Rate limit exceeded');
       expect(fallbackCallback).toHaveBeenCalledWith(
         'oauth-personal',
         expect.any(Error),

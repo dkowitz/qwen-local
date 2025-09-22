@@ -16,7 +16,7 @@ import type {
   Tool,
 } from '@google/genai';
 import { createUserContent } from '@google/genai';
-import { retryWithBackoff } from '../utils/retry.js';
+import { retryWithBackoff, isTransientNetworkError } from '../utils/retry.js';
 import type { ContentGenerator } from './contentGenerator.js';
 import { AuthType } from './contentGenerator.js';
 import type { Config } from '../config/config.js';
@@ -303,6 +303,9 @@ export class GeminiChat {
             if (error.message.includes('429')) return true;
             if (error.message.match(/5\d{2}/)) return true;
           }
+          if (isTransientNetworkError(error)) {
+            return true;
+          }
           return false; // Don't retry other errors by default
         },
         onPersistent429: async (authType?: string, error?: unknown) =>
@@ -499,6 +502,9 @@ export class GeminiChat {
           if (isSchemaDepthError(error.message)) return false;
           if (error.message.includes('429')) return true;
           if (error.message.match(/^5\d{2}/)) return true;
+        }
+        if (isTransientNetworkError(error)) {
+          return true;
         }
         return false;
       },

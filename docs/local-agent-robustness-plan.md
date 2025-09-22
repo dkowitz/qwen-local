@@ -14,7 +14,7 @@
 ## 4. Provider Failure Backoff
 - Wrap the OpenAI-compatible pipeline with richer retry logic that classifies timeouts/connection drops and coordinates with tool execution.
 - After repeated provider failures, fall back to a fresh chat state or a stabilizer prompt before re-entering the main loop.
+- ✅ Automatically detect exhausted provider retries, reset the chat session, cancel pending tools, and dispatch a guided recovery prompt so the agent can continue autonomously.
 
 ## 5. Adaptive Turn Management
 - Replace the fixed `MAX_TURNS` with configurable soft limits plus safeguards (longer thinking windows, automatic tool blacklisting after repeated errors) to support lengthy local runs without suppressing genuine progress.
-

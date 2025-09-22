@@ -29,6 +29,7 @@ import {
   AuthType,
   GeminiEventType as ServerGeminiEventType,
   ToolErrorType,
+  RetryExhaustedError,
 } from '@qwen-code/qwen-code-core';
 import type { Part, PartListUnion } from '@google/genai';
 import type { UseHistoryManagerReturn } from './useHistoryManager.js';
@@ -41,6 +42,7 @@ const mockSendMessageStream = vi
   .fn()
   .mockReturnValue((async function* () {})());
 const mockStartChat = vi.fn();
+const mockResetChat = vi.fn();
 
 const MockedGeminiClientClass = vi.hoisted(() =>
   vi.fn().mockImplementation(function (this: any, _config: any) {
@@ -48,6 +50,7 @@ const MockedGeminiClientClass = vi.hoisted(() =>
     this.startChat = mockStartChat;
     this.sendMessageStream = mockSendMessageStream;
     this.addHistory = vi.fn();
+    this.resetChat = mockResetChat;
   }),
 );
 
@@ -70,6 +73,7 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
     GeminiClient: MockedGeminiClientClass,
     UserPromptEvent: MockedUserPromptEvent,
     parseAndFormatApiError: mockParseAndFormatApiError,
+    RetryExhaustedError: actualCoreModule.RetryExhaustedError,
   };
 });
 
@@ -221,6 +225,7 @@ describe('useGeminiStream', () => {
     mockScheduleToolCalls = vi.fn();
     mockResetToolScheduler = vi.fn();
     mockMarkToolsAsSubmitted = vi.fn();
+    mockResetChat.mockClear();
 
     // Default mock for useReactToolScheduler to prevent toolCalls being undefined initially
     mockUseReactToolScheduler.mockReturnValue([
@@ -309,6 +314,147 @@ describe('useGeminiStream', () => {
       await waitFor(() => {
         expect(mockStartNewPrompt).toHaveBeenCalledTimes(2);
       });
+    });
+  });
+
+  describe('Provider failure recovery', () => {
+    const baseHistory: HistoryItem[] = [
+      { id: 1, type: 'user', text: 'Summarize the current plan.' },
+      { id: 2, type: 'gemini', text: 'Working on the plan analysis.' },
+    ];
+
+    it('resets chat and schedules a recovery prompt after repeated failures', async () => {
+      mockResetChat.mockClear();
+
+      const recoveryStream = (async function* () {
+        yield { type: ServerGeminiEventType.Content, value: 'Recovered content' };
+        yield { type: ServerGeminiEventType.Finished, value: 'STOP' };
+      })();
+
+      mockSendMessageStream
+        .mockImplementationOnce(() => {
+          throw new RetryExhaustedError(new Error('socket hang up'), {
+            attempts: 3,
+            status: undefined,
+            errorCodes: ['ECONNRESET'],
+          });
+        })
+        .mockReturnValueOnce(recoveryStream);
+
+      const { result } = renderTestHook([], undefined, baseHistory);
+
+      await act(async () => {
+        await result.current.submitQuery('trigger provider failure');
+      });
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalled();
+      });
+
+      expect(mockAddItem).toHaveBeenCalled();
+
+
+      await waitFor(() => {
+        expect(
+          mockAddItem.mock.calls.some(
+            ([item]) =>
+              item.type === MessageType.INFO &&
+              typeof item.text === 'string' &&
+              item.text.includes('Provider request failed'),
+          ),
+        ).toBe(true);
+      });
+
+      await waitFor(() => {
+        expect(mockResetToolScheduler).toHaveBeenCalledTimes(1);
+        expect(mockResetChat).toHaveBeenCalledTimes(1);
+      });
+
+      await waitFor(() => {
+        expect(
+          mockAddItem.mock.calls.some(
+            ([item]) =>
+              item.type === MessageType.INFO &&
+              typeof item.text === 'string' &&
+              item.text.includes('Attempting automatic recovery after repeated provider failures'),
+          ),
+        ).toBe(true);
+      });
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
+      });
+
+      const recoveryCall = mockSendMessageStream.mock.calls[1]?.[0];
+      const recoveryPayload =
+        Array.isArray(recoveryCall) && recoveryCall.length > 0
+          ? (recoveryCall[0] as Part | undefined)?.text
+          : undefined;
+      expect(recoveryPayload).toContain(
+        'previous assistant turn failed repeatedly due to network or provider errors',
+      );
+    });
+
+    it('stops automatic recovery once the provider failure limit is reached', async () => {
+      mockResetChat.mockClear();
+
+      mockSendMessageStream
+        .mockImplementationOnce(() => {
+          throw new RetryExhaustedError(new Error('fetch failed'), {
+            attempts: 4,
+            status: 503,
+            errorCodes: ['EAI_AGAIN'],
+          });
+        })
+        .mockImplementationOnce(() => {
+          throw new RetryExhaustedError(new Error('fetch failed'), {
+            attempts: 4,
+            status: 503,
+            errorCodes: ['EAI_AGAIN'],
+          });
+        });
+
+      const { result } = renderTestHook([], undefined, baseHistory);
+
+      await act(async () => {
+        await result.current.submitQuery('trigger provider failure');
+      });
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalled();
+      });
+
+      expect(mockAddItem).toHaveBeenCalled();
+
+
+      await waitFor(() => {
+        expect(
+          mockAddItem.mock.calls.some(
+            ([item]) =>
+              item.type === MessageType.INFO &&
+              typeof item.text === 'string' &&
+              item.text.includes('Provider request failed'),
+          ),
+        ).toBe(true);
+      });
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
+      });
+
+      await waitFor(() => {
+        expect(
+          mockAddItem.mock.calls.some(
+            ([item]) =>
+              item.type === MessageType.ERROR &&
+              typeof item.text === 'string' &&
+              item.text.includes('Automatic recovery was skipped because provider failures'),
+          ),
+        ).toBe(true);
+      });
+
+      expect(mockResetToolScheduler).toHaveBeenCalledTimes(2);
+      expect(mockResetChat).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -1399,17 +1545,22 @@ describe('useGeminiStream', () => {
   });
 
   describe('handleFinishedEvent', () => {
-    it('should add info message for MAX_TOKENS finish reason', async () => {
-      // Setup mock to return a stream with MAX_TOKENS finish reason
-      mockSendMessageStream.mockReturnValue(
-        (async function* () {
-          yield {
-            type: ServerGeminiEventType.Content,
-            value: 'This is a truncated response...',
-          };
-          yield { type: ServerGeminiEventType.Finished, value: 'MAX_TOKENS' };
-        })(),
-      );
+    it('should add info message and schedule recovery for MAX_TOKENS finish reason', async () => {
+      const truncatedStream = (async function* () {
+        yield {
+          type: ServerGeminiEventType.Content,
+          value: 'This is a truncated response...',
+        };
+        yield { type: ServerGeminiEventType.Finished, value: 'MAX_TOKENS' };
+      })();
+      const recoveryStream = (async function* () {
+        yield { type: ServerGeminiEventType.Content, value: 'Recovered reply' };
+        yield { type: ServerGeminiEventType.Finished, value: 'STOP' };
+      })();
+
+      mockSendMessageStream
+        .mockReturnValueOnce(truncatedStream)
+        .mockReturnValueOnce(recoveryStream);
 
       const { result } = renderHook(() =>
         useGeminiStream(
@@ -1435,7 +1586,6 @@ describe('useGeminiStream', () => {
         await result.current.submitQuery('Generate long text');
       });
 
-      // Check that the info message was added
       await waitFor(() => {
         expect(mockAddItem).toHaveBeenCalledWith(
           {
@@ -1445,6 +1595,27 @@ describe('useGeminiStream', () => {
           expect.any(Number),
         );
       });
+
+      await waitFor(() => {
+        expect(mockAddItem).toHaveBeenCalledWith(
+          {
+            type: MessageType.INFO,
+            text: 'Attempting automatic recovery after the model stopped early...',
+          },
+          expect.any(Number),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
+      });
+
+      const recoveryCall = mockSendMessageStream.mock.calls[1];
+      expect(recoveryCall[0]).toEqual([
+        expect.objectContaining({
+          text: expect.stringContaining('MAX_TOKENS'),
+        }),
+      ]);
     });
 
     it('should not add message for STOP finish reason', async () => {
@@ -1630,6 +1801,109 @@ describe('useGeminiStream', () => {
           );
         });
       }
+    });
+  });
+
+  describe('limit recovery events', () => {
+    it('should trigger auto-recovery when session token limit is exceeded', async () => {
+      const limitEvent = (async function* () {
+        yield {
+          type: ServerGeminiEventType.SessionTokenLimitExceeded,
+          value: {
+            currentTokens: 150_000,
+            limit: 128_000,
+            message: 'Session limit exceeded',
+          },
+        };
+      })();
+      const recoveryStream = (async function* () {
+        yield { type: ServerGeminiEventType.Content, value: 'Recovered after limit' };
+        yield { type: ServerGeminiEventType.Finished, value: 'STOP' };
+      })();
+
+      mockSendMessageStream
+        .mockReturnValueOnce(limitEvent)
+        .mockReturnValueOnce(recoveryStream);
+
+      const { result } = renderTestHook();
+
+      await act(async () => {
+        await result.current.submitQuery('long running task');
+      });
+
+      await waitFor(() => {
+        expect(mockResetToolScheduler).toHaveBeenCalledWith(
+          'Session token limit triggered automatic recovery.',
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockAddItem).toHaveBeenCalledWith(
+          {
+            type: MessageType.INFO,
+            text: 'Attempting automatic recovery after session token overflow...',
+          },
+          expect.any(Number),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
+      });
+
+      const [, recoveryCall] = mockSendMessageStream.mock.calls;
+      expect(recoveryCall[0]).toEqual([
+        expect.objectContaining({
+          text: expect.stringContaining('token budget'),
+        }),
+      ]);
+    });
+
+    it('should trigger auto-recovery when max session turns event arrives', async () => {
+      const maxTurnsStream = (async function* () {
+        yield { type: ServerGeminiEventType.MaxSessionTurns };
+      })();
+      const recoveryStream = (async function* () {
+        yield { type: ServerGeminiEventType.Content, value: 'Recovered after turns' };
+        yield { type: ServerGeminiEventType.Finished, value: 'STOP' };
+      })();
+
+      mockSendMessageStream
+        .mockReturnValueOnce(maxTurnsStream)
+        .mockReturnValueOnce(recoveryStream);
+
+      const { result } = renderTestHook();
+
+      await act(async () => {
+        await result.current.submitQuery('turn heavy task');
+      });
+
+      await waitFor(() => {
+        expect(mockResetToolScheduler).toHaveBeenCalledWith(
+          'Turn limit reached. Scheduler reset for recovery.',
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockAddItem).toHaveBeenCalledWith(
+          {
+            type: MessageType.INFO,
+            text: 'Attempting automatic recovery after hitting the turn limit...',
+          },
+          expect.any(Number),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
+      });
+
+      const [, recoveryCall] = mockSendMessageStream.mock.calls;
+      expect(recoveryCall[0]).toEqual([
+        expect.objectContaining({
+          text: expect.stringContaining('turn cap'),
+        }),
+      ]);
     });
   });
 
