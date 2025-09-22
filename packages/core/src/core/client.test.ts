@@ -35,6 +35,7 @@ import {
   GeminiEventType,
   Turn,
   type ChatCompressionInfo,
+  type ServerGeminiStreamEvent,
 } from './turn.js';
 import { getCoreSystemPrompt } from './prompts.js';
 import { DEFAULT_GEMINI_FLASH_MODEL } from '../config/models.js';
@@ -175,6 +176,8 @@ describe('findIndexAfterFraction', () => {
 
 describe('Gemini Client (client.ts)', () => {
   let client: GeminiClient;
+  let mockConfigObject: Record<string, any>;
+
   beforeEach(async () => {
     vi.resetAllMocks();
 
@@ -229,7 +232,7 @@ describe('Gemini Client (client.ts)', () => {
     const mockSubagentManager = {
       listSubagents: vi.fn().mockResolvedValue([]),
     };
-    const mockConfigObject = {
+    mockConfigObject = {
       getContentGeneratorConfig: vi
         .fn()
         .mockReturnValue(contentGeneratorConfig),
@@ -247,6 +250,8 @@ describe('Gemini Client (client.ts)', () => {
       getFileService: vi.fn().mockReturnValue(fileService),
       getMaxSessionTurns: vi.fn().mockReturnValue(0),
       getSessionTokenLimit: vi.fn().mockReturnValue(32000),
+      getMaxAutomaticTurns: vi.fn().mockReturnValue(400),
+      getToolAutoBlockThreshold: vi.fn().mockReturnValue(3),
       getQuotaErrorOccurred: vi.fn().mockReturnValue(false),
       setQuotaErrorOccurred: vi.fn(),
       getNoBrowser: vi.fn().mockReturnValue(false),
@@ -265,6 +270,11 @@ describe('Gemini Client (client.ts)', () => {
       getSkipNextSpeakerCheck: vi.fn().mockReturnValue(false),
       getSubagentManager: vi.fn().mockReturnValue(mockSubagentManager),
       getSkipLoopDetection: vi.fn().mockReturnValue(false),
+      getEffectiveTokenLimit: vi
+        .fn()
+        .mockImplementation((model?: string) =>
+          tokenLimit(model ?? 'test-model'),
+        ),
     };
     const MockedConfig = vi.mocked(Config, true);
     MockedConfig.mockImplementation(
@@ -276,7 +286,7 @@ describe('Gemini Client (client.ts)', () => {
     client = new GeminiClient(
       new Config({ sessionId: 'test-session-id' } as never),
     );
-    mockConfigObject.getGeminiClient.mockReturnValue(client);
+    mockConfigObject['getGeminiClient'].mockReturnValue(client);
 
     await client.initialize(contentGeneratorConfig);
   });
@@ -1366,7 +1376,9 @@ ${JSON.stringify(
       expect(finalResult).toBeInstanceOf(Turn);
     });
 
-    it('should stop infinite loop after MAX_TURNS when nextSpeaker always returns model', async () => {
+    it('should stop infinite loop after automatic turn budget when nextSpeaker always returns model', async () => {
+      mockConfigObject['getMaxAutomaticTurns'].mockReturnValue(5);
+
       // Get the mocked checkNextSpeaker function and configure it to trigger infinite loop
       const { checkNextSpeaker } = await import(
         '../utils/nextSpeakerChecker.js'
@@ -1376,6 +1388,8 @@ ${JSON.stringify(
         next_speaker: 'model',
         reasoning: 'Test case - always continue',
       });
+
+      mockConfigObject['getMaxAutomaticTurns'].mockReturnValue(4);
 
       // Mock Turn to have no pending tool calls (which would allow nextSpeaker check)
       const mockStream = (async function* () {
@@ -1407,6 +1421,7 @@ ${JSON.stringify(
       );
 
       // Count how many stream events we get
+      const events: ServerGeminiStreamEvent[] = [];
       let eventCount = 0;
       let finalResult: Turn | undefined;
 
@@ -1418,6 +1433,7 @@ ${JSON.stringify(
           break;
         }
         eventCount++;
+        events.push(result.value as ServerGeminiStreamEvent);
 
         // Safety check to prevent actual infinite loop in test
         if (eventCount > 200) {
@@ -1435,12 +1451,12 @@ ${JSON.stringify(
       const callCount = mockCheckNextSpeaker.mock.calls.length;
 
       // If infinite loop protection is working, checkNextSpeaker should be called many times
-      // but stop at MAX_TURNS (100). Since each recursive call should trigger checkNextSpeaker,
-      // we expect it to be called multiple times before hitting the limit
+      // but stop at the configured budget. Since each recursive call should trigger
+      // checkNextSpeaker, we expect it to be called multiple times before hitting the limit
       expect(mockCheckNextSpeaker).toHaveBeenCalled();
 
       // The test should demonstrate that the infinite loop protection works:
-      // - If checkNextSpeaker is called many times (close to MAX_TURNS), it shows the loop was happening
+      // - If checkNextSpeaker is called many times (close to the configured budget), it shows the loop was happening
       // - If it's only called once, the recursive behavior might not be triggered
       if (callCount === 0) {
         throw new Error(
@@ -1455,13 +1471,18 @@ ${JSON.stringify(
         console.log(
           `checkNextSpeaker called ${callCount} times - infinite loop protection worked`,
         );
-        // If called multiple times, we expect it to be stopped before MAX_TURNS
-        expect(callCount).toBeLessThanOrEqual(100); // Should not exceed MAX_TURNS
+        expect(callCount).toBeLessThanOrEqual(4);
       }
 
       // The stream should produce events and eventually terminate
       expect(eventCount).toBeGreaterThanOrEqual(1);
       expect(eventCount).toBeLessThan(200); // Should not exceed our safety limit
+      expect(
+        events.some(
+          (event) => event.type === GeminiEventType.TurnBudgetExceeded,
+        ),
+      ).toBe(true);
+      mockConfigObject['getMaxAutomaticTurns'].mockReturnValue(400);
     });
 
     it('should yield MaxSessionTurns and stop when session turn limit is reached', async () => {
@@ -1518,9 +1539,8 @@ ${JSON.stringify(
       expect(mockTurnRunFn).toHaveBeenCalledTimes(MAX_SESSION_TURNS);
     });
 
-    it('should respect MAX_TURNS limit even when turns parameter is set to a large value', async () => {
-      // This test verifies that the infinite loop protection works even when
-      // someone tries to bypass it by calling with a very large turns value
+    it('respects the automatic turn budget even when turns parameter is set to a large value', async () => {
+      mockConfigObject['getMaxAutomaticTurns'].mockReturnValue(5);
 
       // Get the mocked checkNextSpeaker function and configure it to trigger infinite loop
       const { checkNextSpeaker } = await import(
@@ -1555,51 +1575,29 @@ ${JSON.stringify(
       const signal = abortController.signal;
 
       // Act - Start the stream with an extremely high turns value
-      // This simulates a case where the turns protection is bypassed
+      // to ensure the configured budget still caps recursion
       const stream = client.sendMessageStream(
         [{ text: 'Start conversation' }],
         signal,
         'prompt-id-3',
-        Number.MAX_SAFE_INTEGER, // Bypass the MAX_TURNS protection
+        Number.MAX_SAFE_INTEGER,
       );
 
-      // Count how many stream events we get
-      let eventCount = 0;
-      const maxTestIterations = 1000; // Higher limit to show the loop continues
-
-      // Consume the stream and count iterations
-      try {
-        while (true) {
-          const result = await stream.next();
-          if (result.done) {
-            break;
-          }
-          eventCount++;
-
-          // This test should hit this limit, demonstrating the infinite loop
-          if (eventCount > maxTestIterations) {
-            abortController.abort();
-            // This is the expected behavior - we hit the infinite loop
-            break;
-          }
-        }
-      } catch (error) {
-        // If the test framework times out, that also demonstrates the infinite loop
-        console.error('Test timed out or errored:', error);
+      const events: ServerGeminiStreamEvent[] = [];
+      for await (const event of stream) {
+        events.push(event as ServerGeminiStreamEvent);
       }
 
-      // Assert that the fix works - the loop should stop at MAX_TURNS
       const callCount = mockCheckNextSpeaker.mock.calls.length;
 
-      // With the fix: even when turns is set to a very high value,
-      // the loop should stop at MAX_TURNS (100)
-      expect(callCount).toBeLessThanOrEqual(100); // Should not exceed MAX_TURNS
-      expect(eventCount).toBeLessThanOrEqual(200); // Should have reasonable number of events
+      expect(callCount).toBeLessThanOrEqual(5);
+      expect(
+        events.some(
+          (event) => event.type === GeminiEventType.TurnBudgetExceeded,
+        ),
+      ).toBe(true);
 
-      console.log(
-        `Infinite loop protection working: checkNextSpeaker called ${callCount} times, ` +
-          `${eventCount} events generated (properly bounded by MAX_TURNS)`,
-      );
+      mockConfigObject['getMaxAutomaticTurns'].mockReturnValue(400);
     });
 
     describe('Editor context delta', () => {

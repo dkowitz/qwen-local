@@ -341,6 +341,16 @@ export const SETTINGS_SCHEMA = {
           'Maximum number of user/model/tool turns to keep in a session. -1 means unlimited.',
         showInDialog: true,
       },
+      maxAutomaticTurns: {
+        type: 'number',
+        label: 'Automatic Turn Budget',
+        category: 'Model',
+        requiresRestart: false,
+        default: 400,
+        description:
+          'Maximum number of consecutive model turns allowed before pausing for review. Set to 0 to disable.',
+        showInDialog: true,
+      },
       summarizeToolOutput: {
         type: 'object',
         label: 'Summarize Tool Output',
@@ -581,6 +591,16 @@ export const SETTINGS_SCHEMA = {
         default: false,
         description:
           'Use ripgrep for file content search instead of the fallback implementation. Provides faster search performance.',
+        showInDialog: true,
+      },
+      autoBlockThreshold: {
+        type: 'number',
+        label: 'Tool Error Auto-Block Threshold',
+        category: 'Tools',
+        requiresRestart: false,
+        default: 3,
+        description:
+          'Number of consecutive errors before a tool is temporarily blocked for the current prompt. Set to 0 to disable.',
         showInDialog: true,
       },
     },

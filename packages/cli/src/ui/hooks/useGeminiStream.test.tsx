@@ -1905,6 +1905,56 @@ describe('useGeminiStream', () => {
         }),
       ]);
     });
+
+    it('should trigger auto-recovery when the automatic turn budget event arrives', async () => {
+      const budgetStream = (async function* () {
+        yield {
+          type: ServerGeminiEventType.TurnBudgetExceeded,
+          value: { limit: 4 },
+        };
+      })();
+      const recoveryStream = (async function* () {
+        yield { type: ServerGeminiEventType.Content, value: 'Recovered after budget' };
+        yield { type: ServerGeminiEventType.Finished, value: 'STOP' };
+      })();
+
+      mockSendMessageStream
+        .mockReturnValueOnce(budgetStream)
+        .mockReturnValueOnce(recoveryStream);
+
+      const { result } = renderTestHook();
+
+      await act(async () => {
+        await result.current.submitQuery('long running task');
+      });
+
+      await waitFor(() => {
+        expect(mockResetToolScheduler).toHaveBeenCalledWith(
+          'Automatic turn budget reached. Scheduler reset for recovery.',
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockAddItem).toHaveBeenCalledWith(
+          {
+            type: MessageType.INFO,
+            text: 'Attempting automatic recovery after reaching the turn budget...',
+          },
+          expect.any(Number),
+        );
+      });
+
+      await waitFor(() => {
+        expect(mockSendMessageStream).toHaveBeenCalledTimes(2);
+      });
+
+      const [, recoveryCall] = mockSendMessageStream.mock.calls;
+      expect(recoveryCall[0]).toEqual([
+        expect.objectContaining({
+          text: expect.stringContaining('automatic turn budget'),
+        }),
+      ]);
+    });
   });
 
   it('should process @include commands, adding user turn after processing to prevent race conditions', async () => {

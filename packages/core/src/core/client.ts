@@ -92,8 +92,6 @@ export function findIndexAfterFraction(
   return contentLengths.length;
 }
 
-const MAX_TURNS = 100;
-
 /**
  * Threshold for compression token count as a fraction of the model's token limit.
  * If the chat history exceeds this threshold, it will be compressed.
@@ -492,7 +490,7 @@ export class GeminiClient {
     request: PartListUnion,
     signal: AbortSignal,
     prompt_id: string,
-    turns: number = MAX_TURNS,
+    turns?: number,
     originalModel?: string,
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
     const isNewPrompt = this.lastPromptId !== prompt_id;
@@ -508,9 +506,21 @@ export class GeminiClient {
       yield { type: GeminiEventType.MaxSessionTurns };
       return new Turn(this.getChat(), prompt_id);
     }
-    // Ensure turns never exceeds MAX_TURNS to prevent infinite loops
-    const boundedTurns = Math.min(turns, MAX_TURNS);
-    if (!boundedTurns) {
+    const configuredTurnLimit = this.config.getMaxAutomaticTurns();
+    const effectiveTurnLimit =
+      configuredTurnLimit > 0 ? configuredTurnLimit : Number.MAX_SAFE_INTEGER;
+    const availableTurns =
+      typeof turns === 'number' ? turns : effectiveTurnLimit;
+    const boundedTurns = Math.floor(
+      Math.min(availableTurns, effectiveTurnLimit),
+    );
+    if (!Number.isFinite(boundedTurns) || boundedTurns <= 0) {
+      yield {
+        type: GeminiEventType.TurnBudgetExceeded,
+        value: {
+          limit: configuredTurnLimit > 0 ? configuredTurnLimit : null,
+        },
+      };
       return new Turn(this.getChat(), prompt_id);
     }
 

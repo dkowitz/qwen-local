@@ -260,6 +260,30 @@ function buildTurnLimitRecoveryPrompt(
   return promptSections.filter(Boolean).join('\n\n');
 }
 
+function buildTurnBudgetRecoveryPrompt(
+  summary: string,
+  attempt: number,
+  limit: number | null,
+): string {
+  const limitText =
+    typeof limit === 'number' && limit > 0
+      ? `${limit.toLocaleString()} turns`
+      : 'the configured budget';
+  const promptSections = [
+    `System notice: The automatic turn budget (${limitText}) was reached while the assistant continued autonomously. Pending tool activity was cancelled so the workflow can be reassessed.`,
+    summary ? `Recent context snapshot:\n${summary}` : undefined,
+    'Summarize the latest progress, note what remains, and proceed with a concise next action. If the work needs more thinking time, explain why and continue with deliberate steps.',
+  ];
+
+  if (attempt > 1) {
+    promptSections.push(
+      'This is an additional recovery attempt. Adjust your strategy immediately—favor shorter plans or break the task into smaller sub-steps before continuing.',
+    );
+  }
+
+  return promptSections.filter(Boolean).join('\n\n');
+}
+
 const FINISH_REASON_RECOVERY_GUIDANCE: Partial<Record<FinishReason, string>> = {
   [FinishReason.MAX_TOKENS]:
     'Resume from the last complete point but keep outputs short. Split long responses into numbered follow-ups or delegate subtasks so no single reply approaches the limit.',
@@ -1055,6 +1079,94 @@ export const useGeminiStream = (
     ],
   );
 
+  const handleTurnBudgetExceededEvent = useCallback(
+    (
+      value: { limit: number | null },
+      promptId: string,
+      userMessageTimestamp: number,
+    ): StreamProcessingStatus | null => {
+      const timestamp = Date.now();
+      const limitText =
+        typeof value.limit === 'number' && value.limit > 0
+          ? value.limit.toLocaleString()
+          : 'configured';
+      addItem(
+        {
+          type: 'info',
+          text: `The automatic turn budget (${limitText} turns) was reached. Pausing to reassess before continuing.`,
+        },
+        timestamp,
+      );
+
+      abortControllerRef.current?.abort();
+      resetToolScheduler('Automatic turn budget reached. Scheduler reset for recovery.');
+      setPendingHistoryItem(null);
+      setThought(null);
+
+      if (pendingAutoRecoveryRef.current) {
+        return StreamProcessingStatus.Error;
+      }
+
+      if (limitRecoveryAttemptsRef.current >= LIMIT_RECOVERY_MAX_ATTEMPTS) {
+        addItem(
+          {
+            type: MessageType.ERROR,
+            text: 'Automatic recovery was skipped because the turn budget safeguard already triggered during this prompt. Please intervene manually.',
+          },
+          timestamp,
+        );
+        return StreamProcessingStatus.Error;
+      }
+
+      const summary = buildContextSnapshot(
+        history,
+        pendingHistoryItemRef.current,
+      );
+
+      const attemptNumber = limitRecoveryAttemptsRef.current + 1;
+      limitRecoveryAttemptsRef.current = attemptNumber;
+
+      const recoveryPromptId = `${promptId}-turn-budget-recovery-${attemptNumber}`;
+      const recoveryPromptText = buildTurnBudgetRecoveryPrompt(
+        summary,
+        attemptNumber,
+        value.limit ?? null,
+      );
+
+      pendingAutoRecoveryRef.current = {
+        promptId: recoveryPromptId,
+        query: [{ text: recoveryPromptText }],
+        timestamp: userMessageTimestamp,
+        isContinuation: false,
+        skipLoopReset: true,
+        skipProviderReset: true,
+        skipLimitReset: true,
+        skipFinishReset: true,
+      };
+
+      addItem(
+        {
+          type: MessageType.INFO,
+          text: 'Attempting automatic recovery after reaching the turn budget...',
+        },
+        timestamp,
+      );
+
+      return StreamProcessingStatus.Error;
+    },
+    [
+      addItem,
+      resetToolScheduler,
+      pendingAutoRecoveryRef,
+      limitRecoveryAttemptsRef,
+      history,
+      pendingHistoryItemRef,
+      setPendingHistoryItem,
+      setThought,
+      abortControllerRef,
+    ],
+  );
+
   const handleProviderFailureRecovery = useCallback(
     async (
       error: RetryExhaustedErrorLike,
@@ -1308,6 +1420,18 @@ export const useGeminiStream = (
               }
               break;
             }
+          case ServerGeminiEventType.TurnBudgetExceeded:
+            {
+              const status = handleTurnBudgetExceededEvent(
+                event.value,
+                promptId,
+                userMessageTimestamp,
+              );
+              if (status !== null) {
+                return status;
+              }
+              break;
+            }
           case ServerGeminiEventType.Finished:
             handleFinishedEvent(
               event as ServerGeminiFinishedEvent,
@@ -1386,6 +1510,7 @@ export const useGeminiStream = (
       handleFinishedEvent,
       handleMaxSessionTurnsEvent,
       handleSessionTokenLimitExceededEvent,
+      handleTurnBudgetExceededEvent,
       addItem,
       pendingHistoryItemRef,
       setPendingHistoryItem,

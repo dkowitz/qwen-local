@@ -22,9 +22,15 @@ import {
   BaseToolInvocation,
   Kind,
   ToolConfirmationOutcome,
+  ToolErrorType,
 } from '../index.js';
 import { MockModifiableTool, MockTool } from '../test-utils/tools.js';
-import type { ToolCall, WaitingToolCall } from './coreToolScheduler.js';
+import type {
+  CompletedToolCall,
+  ToolCall,
+  WaitingToolCall,
+} from './coreToolScheduler.js';
+import type { ToolCallRequestInfo } from './turn.js';
 import {
   CoreToolScheduler,
   convertToFunctionResponse,
@@ -169,6 +175,7 @@ describe('CoreToolScheduler', () => {
         authType: 'oauth-personal',
       }),
       getToolRegistry: () => mockToolRegistry,
+      getToolAutoBlockThreshold: () => 0,
     } as unknown as Config;
 
     const scheduler = new CoreToolScheduler({
@@ -193,7 +200,7 @@ describe('CoreToolScheduler', () => {
 
     expect(onAllToolCallsComplete).toHaveBeenCalled();
     const completedCalls = onAllToolCallsComplete.mock
-      .calls[0][0] as ToolCall[];
+      .calls[0][0] as CompletedToolCall[];
     expect(completedCalls[0].status).toBe('cancelled');
   });
 
@@ -202,6 +209,7 @@ describe('CoreToolScheduler', () => {
       // Create mocked tool registry
       const mockConfig = {
         getToolRegistry: () => mockToolRegistry,
+        getToolAutoBlockThreshold: () => 0,
       } as unknown as Config;
       const mockToolRegistry = {
         getAllToolNames: () => ['list_files', 'read_file', 'write_file'],
@@ -231,6 +239,183 @@ describe('CoreToolScheduler', () => {
         ' Did you mean one of: "list_files", "read_file", "write_file"?',
       );
     });
+  });
+});
+
+describe('Adaptive tool auto-blocking', () => {
+  it('auto-blocks a tool after consecutive errors within the same prompt', async () => {
+    const mockTool = new MockTool('errorTool');
+    mockTool.executeFn.mockImplementation(() => {
+      throw new Error('boom');
+    });
+
+    const mockToolRegistry = {
+      getTool: () => mockTool,
+      getToolByName: () => mockTool,
+      getFunctionDeclarations: () => [],
+      tools: new Map(),
+      discovery: {},
+      registerTool: () => {},
+      getToolByDisplayName: () => mockTool,
+      getTools: () => [],
+      discoverTools: async () => {},
+      getAllTools: () => [],
+      getToolsByServer: () => [],
+    } as unknown as ToolRegistry;
+
+    const onAllToolCallsComplete = vi.fn();
+    const onToolCallsUpdate = vi.fn();
+
+    const mockConfig = {
+      getSessionId: () => 'test-session-id',
+      getUsageStatisticsEnabled: () => true,
+      getDebugMode: () => false,
+      getApprovalMode: () => ApprovalMode.DEFAULT,
+      getAllowedTools: () => [],
+      getContentGeneratorConfig: () => ({
+        model: 'test-model',
+        authType: 'oauth-personal',
+      }),
+      getToolRegistry: () => mockToolRegistry,
+      getToolAutoBlockThreshold: () => 2,
+    } as unknown as Config;
+
+    const scheduler = new CoreToolScheduler({
+      config: mockConfig,
+      onAllToolCallsComplete,
+      onToolCallsUpdate,
+      getPreferredEditor: () => 'vscode',
+      onEditorClose: vi.fn(),
+    });
+
+    const createRequest = (callId: string): ToolCallRequestInfo => ({
+      callId,
+      name: 'errorTool',
+      args: {},
+      isClientInitiated: false,
+      prompt_id: 'prompt-budget',
+    });
+
+    await scheduler.schedule([createRequest('1')], new AbortController().signal);
+    await vi.waitFor(
+      () => onAllToolCallsComplete.mock.calls.length >= 1,
+    );
+    let completedCalls = onAllToolCallsComplete.mock.calls.at(-1)?.[0] as
+      | CompletedToolCall[]
+      | undefined;
+    expect(completedCalls?.[0].status).toBe('error');
+    expect(completedCalls?.[0].response.errorType).not.toBe(
+      ToolErrorType.TOOL_AUTO_DISABLED,
+    );
+
+    const secondCallIndex = onAllToolCallsComplete.mock.calls.length;
+    await scheduler.schedule([createRequest('2')], new AbortController().signal);
+    await vi.waitFor(
+      () => onAllToolCallsComplete.mock.calls.length > secondCallIndex,
+    );
+    completedCalls = onAllToolCallsComplete.mock.calls.at(-1)?.[0] as
+      | CompletedToolCall[]
+      | undefined;
+    expect(completedCalls?.[0].status).toBe('error');
+    expect(completedCalls?.[0].response.errorType).not.toBe(
+      ToolErrorType.TOOL_AUTO_DISABLED,
+    );
+
+    mockTool.executeFn.mockClear();
+
+    const thirdCallIndex = onAllToolCallsComplete.mock.calls.length;
+    await scheduler.schedule([createRequest('3')], new AbortController().signal);
+    await vi.waitFor(
+      () => onAllToolCallsComplete.mock.calls.length > thirdCallIndex,
+    );
+    completedCalls = onAllToolCallsComplete.mock.calls.at(-1)?.[0] as
+      | CompletedToolCall[]
+      | undefined;
+    expect(completedCalls?.[0].status).toBe('error');
+    expect(completedCalls?.[0].response.errorType).toBe(
+      ToolErrorType.TOOL_AUTO_DISABLED,
+    );
+    const autoBlockMessage =
+      completedCalls?.[0].response.responseParts[0].functionResponse?.response?.[
+        'error'
+      ];
+    expect(autoBlockMessage).toContain('temporarily paused');
+    expect(mockTool.executeFn).not.toHaveBeenCalled();
+  });
+
+  it('clears the blacklist when a new prompt begins', async () => {
+    const mockTool = new MockTool('errorTool');
+    mockTool.executeFn.mockImplementation(() => {
+      throw new Error('boom');
+    });
+
+    const mockToolRegistry = {
+      getTool: () => mockTool,
+      getToolByName: () => mockTool,
+      getFunctionDeclarations: () => [],
+      tools: new Map(),
+      discovery: {},
+      registerTool: () => {},
+      getToolByDisplayName: () => mockTool,
+      getTools: () => [],
+      discoverTools: async () => {},
+      getAllTools: () => [],
+      getToolsByServer: () => [],
+    } as unknown as ToolRegistry;
+
+    const onAllToolCallsComplete = vi.fn();
+    const onToolCallsUpdate = vi.fn();
+
+    const mockConfig = {
+      getSessionId: () => 'test-session-id',
+      getUsageStatisticsEnabled: () => true,
+      getDebugMode: () => false,
+      getApprovalMode: () => ApprovalMode.DEFAULT,
+      getAllowedTools: () => [],
+      getContentGeneratorConfig: () => ({
+        model: 'test-model',
+        authType: 'oauth-personal',
+      }),
+      getToolRegistry: () => mockToolRegistry,
+      getToolAutoBlockThreshold: () => 2,
+    } as unknown as Config;
+
+    const scheduler = new CoreToolScheduler({
+      config: mockConfig,
+      onAllToolCallsComplete,
+      onToolCallsUpdate,
+      getPreferredEditor: () => 'vscode',
+      onEditorClose: vi.fn(),
+    });
+
+    const createRequest = (
+      callId: string,
+      promptId: string,
+    ): ToolCallRequestInfo => ({
+      callId,
+      name: 'errorTool',
+      args: {},
+      isClientInitiated: false,
+      prompt_id: promptId,
+    });
+
+    await scheduler.schedule([createRequest('1', 'prompt-a')], new AbortController().signal);
+    await scheduler.schedule([createRequest('2', 'prompt-a')], new AbortController().signal);
+
+    mockTool.executeFn.mockClear();
+
+    const newPromptCallIndex = onAllToolCallsComplete.mock.calls.length;
+    await scheduler.schedule([createRequest('3', 'prompt-b')], new AbortController().signal);
+    await vi.waitFor(
+      () => onAllToolCallsComplete.mock.calls.length > newPromptCallIndex,
+    );
+
+    expect(mockTool.executeFn).toHaveBeenCalledTimes(1);
+    const completedCalls = onAllToolCallsComplete.mock.calls.at(-1)?.[0] as
+      CompletedToolCall[];
+    expect(completedCalls?.[0].response.errorType).not.toBe(
+      ToolErrorType.TOOL_AUTO_DISABLED,
+    );
   });
 });
 
@@ -266,6 +451,7 @@ describe('CoreToolScheduler with payload', () => {
         authType: 'oauth-personal',
       }),
       getToolRegistry: () => mockToolRegistry,
+      getToolAutoBlockThreshold: () => 0,
     } as unknown as Config;
 
     const scheduler = new CoreToolScheduler({
@@ -572,6 +758,7 @@ describe('CoreToolScheduler edit cancellation', () => {
         authType: 'oauth-personal',
       }),
       getToolRegistry: () => mockToolRegistry,
+      getToolAutoBlockThreshold: () => 0,
     } as unknown as Config;
 
     const scheduler = new CoreToolScheduler({
@@ -663,6 +850,7 @@ describe('CoreToolScheduler YOLO mode', () => {
         authType: 'oauth-personal',
       }),
       getToolRegistry: () => mockToolRegistry,
+      getToolAutoBlockThreshold: () => 0,
     } as unknown as Config;
 
     const scheduler = new CoreToolScheduler({
@@ -795,6 +983,7 @@ describe('CoreToolScheduler cancellation during executing with live output', () 
         authType: 'oauth-personal',
       }),
       getToolRegistry: () => mockToolRegistry,
+      getToolAutoBlockThreshold: () => 0,
     } as unknown as Config;
 
     const scheduler = new CoreToolScheduler({
@@ -882,6 +1071,7 @@ describe('CoreToolScheduler request queueing', () => {
         authType: 'oauth-personal',
       }),
       getToolRegistry: () => mockToolRegistry,
+      getToolAutoBlockThreshold: () => 0,
     } as unknown as Config;
 
     const scheduler = new CoreToolScheduler({
@@ -998,6 +1188,7 @@ describe('CoreToolScheduler request queueing', () => {
         model: 'test-model',
         authType: 'oauth-personal',
       }),
+      getToolAutoBlockThreshold: () => 0,
     } as unknown as Config;
 
     const scheduler = new CoreToolScheduler({
@@ -1078,6 +1269,7 @@ describe('CoreToolScheduler request queueing', () => {
         authType: 'oauth-personal',
       }),
       getToolRegistry: () => mockToolRegistry,
+      getToolAutoBlockThreshold: () => 0,
     } as unknown as Config;
 
     const scheduler = new CoreToolScheduler({

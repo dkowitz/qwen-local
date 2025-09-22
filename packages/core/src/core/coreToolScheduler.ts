@@ -269,6 +269,9 @@ export class CoreToolScheduler {
     resolve: () => void;
     reject: (reason?: Error) => void;
   }> = [];
+  private currentPromptId: string | null = null;
+  private readonly toolErrorCounts = new Map<string, number>();
+  private readonly toolBlacklist = new Set<string>();
 
   private static readonly DEFAULT_RESET_REASON =
     'Tool execution was cancelled while recovering from a detected loop.';
@@ -300,6 +303,9 @@ export class CoreToolScheduler {
 
     this.isScheduling = false;
     this.isFinalizingToolCalls = false;
+    this.currentPromptId = null;
+    this.toolErrorCounts.clear();
+    this.toolBlacklist.clear();
 
     const activeCalls = this.toolCalls.filter(
       (call) =>
@@ -365,6 +371,7 @@ export class CoreToolScheduler {
 
       switch (newStatus) {
         case 'success': {
+          this.handleToolSuccess(currentCall.request.name);
           const durationMs = existingStartTime
             ? Date.now() - existingStartTime
             : undefined;
@@ -379,6 +386,7 @@ export class CoreToolScheduler {
           } as SuccessfulToolCall;
         }
         case 'error': {
+          this.handleToolFailure(currentCall.request.name);
           const durationMs = existingStartTime
             ? Date.now() - existingStartTime
             : undefined;
@@ -489,6 +497,54 @@ export class CoreToolScheduler {
     });
     this.notifyToolCallsUpdate();
     this.checkAndNotifyCompletion();
+  }
+
+  private getToolErrorThreshold(): number {
+    if (typeof this.config.getToolAutoBlockThreshold !== 'function') {
+      return 0;
+    }
+    return this.config.getToolAutoBlockThreshold();
+  }
+
+  private isAutoBlockEnabled(): boolean {
+    return this.getToolErrorThreshold() > 0;
+  }
+
+  private ensurePromptContext(promptId: string | undefined): void {
+    if (!promptId) {
+      return;
+    }
+    if (this.currentPromptId !== promptId) {
+      this.currentPromptId = promptId;
+      this.toolErrorCounts.clear();
+      this.toolBlacklist.clear();
+    }
+  }
+
+  private handleToolFailure(toolName: string | undefined): void {
+    if (!this.isAutoBlockEnabled() || !toolName) {
+      return;
+    }
+    const nextCount = (this.toolErrorCounts.get(toolName) ?? 0) + 1;
+    this.toolErrorCounts.set(toolName, nextCount);
+    if (nextCount >= this.getToolErrorThreshold()) {
+      this.toolBlacklist.add(toolName);
+    }
+  }
+
+  private handleToolSuccess(toolName: string | undefined): void {
+    if (!toolName) {
+      return;
+    }
+    this.toolErrorCounts.delete(toolName);
+    this.toolBlacklist.delete(toolName);
+  }
+
+  private isToolBlacklisted(toolName: string | undefined): boolean {
+    if (!this.isAutoBlockEnabled() || !toolName) {
+      return false;
+    }
+    return this.toolBlacklist.has(toolName);
   }
 
   private setArgsInternal(targetCallId: string, args: unknown): void {
@@ -632,12 +688,32 @@ export class CoreToolScheduler {
       }
       const requestsToProcess = Array.isArray(request) ? request : [request];
 
+      for (const req of requestsToProcess) {
+        this.ensurePromptContext(req.prompt_id);
+      }
+
       const newToolCalls: ToolCall[] = requestsToProcess.map(
         (reqInfo): ToolCall => {
+          if (this.isToolBlacklisted(reqInfo.name)) {
+            const message =
+              `Tool "${reqInfo.name}" was temporarily paused after repeated errors. ` +
+              'Adjust your approach or choose a different tool before retrying.';
+            return {
+              status: 'error',
+              request: reqInfo,
+              response: createErrorResponse(
+                reqInfo,
+                new Error(message),
+                ToolErrorType.TOOL_AUTO_DISABLED,
+              ),
+              durationMs: 0,
+            };
+          }
           const toolInstance = this.toolRegistry.getTool(reqInfo.name);
           if (!toolInstance) {
             const suggestion = this.getToolSuggestion(reqInfo.name);
             const errorMessage = `Tool "${reqInfo.name}" not found in registry. Tools must use the exact names that are registered.${suggestion}`;
+            this.handleToolFailure(reqInfo.name);
             return {
               status: 'error',
               request: reqInfo,
@@ -655,6 +731,7 @@ export class CoreToolScheduler {
             reqInfo.args,
           );
           if (invocationOrError instanceof Error) {
+            this.handleToolFailure(reqInfo.name);
             return {
               status: 'error',
               request: reqInfo,

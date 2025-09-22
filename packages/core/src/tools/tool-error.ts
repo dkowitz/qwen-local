@@ -66,4 +66,7 @@ export enum ToolErrorType {
 
   // WebSearch-specific Errors
   WEB_SEARCH_FAILED = 'web_search_failed',
+
+  // Adaptive safeguards
+  TOOL_AUTO_DISABLED = 'tool_auto_disabled',
 }

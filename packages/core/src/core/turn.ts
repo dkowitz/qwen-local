@@ -53,6 +53,7 @@ export enum GeminiEventType {
   Thought = 'thought',
   MaxSessionTurns = 'max_session_turns',
   SessionTokenLimitExceeded = 'session_token_limit_exceeded',
+  TurnBudgetExceeded = 'turn_budget_exceeded',
   Finished = 'finished',
   LoopDetected = 'loop_detected',
   Citation = 'citation',
@@ -76,6 +77,10 @@ export interface SessionTokenLimitExceededValue {
   currentTokens: number;
   limit: number;
   message: string;
+}
+
+export interface TurnBudgetExhaustedValue {
+  limit: number | null;
 }
 
 export interface ToolCallRequestInfo {
@@ -172,6 +177,11 @@ export type ServerGeminiSessionTokenLimitExceededEvent = {
   value: SessionTokenLimitExceededValue;
 };
 
+export type ServerGeminiTurnBudgetExceededEvent = {
+  type: GeminiEventType.TurnBudgetExceeded;
+  value: TurnBudgetExhaustedValue;
+};
+
 export type ServerGeminiFinishedEvent = {
   type: GeminiEventType.Finished;
   value: FinishReason;
@@ -193,6 +203,7 @@ export type ServerGeminiStreamEvent =
   | ServerGeminiThoughtEvent
   | ServerGeminiMaxSessionTurnsEvent
   | ServerGeminiSessionTokenLimitExceededEvent
+  | ServerGeminiTurnBudgetExceededEvent
   | ServerGeminiFinishedEvent
   | ServerGeminiLoopDetectedEvent
   | ServerGeminiRetryEvent;

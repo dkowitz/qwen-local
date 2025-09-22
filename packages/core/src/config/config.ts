@@ -120,6 +120,8 @@ export const DEFAULT_FILE_FILTERING_OPTIONS: FileFilteringOptions = {
   respectGitIgnore: true,
   respectGeminiIgnore: true,
 };
+const DEFAULT_MAX_AUTOMATIC_TURNS = 400;
+const DEFAULT_TOOL_AUTO_BLOCK_THRESHOLD = 3;
 export class MCPServerConfig {
   constructor(
     // For stdio transport
@@ -243,6 +245,8 @@ export interface ConfigParameters {
   extensionManagement?: boolean;
   enablePromptCompletion?: boolean;
   skipLoopDetection?: boolean;
+  maxAutomaticTurns?: number;
+  toolAutoBlockThreshold?: number;
 }
 
 export class Config {
@@ -302,6 +306,8 @@ export class Config {
   }>;
   private readonly maxSessionTurns: number;
   private readonly sessionTokenLimit: number;
+  private readonly maxAutomaticTurns: number;
+  private readonly toolAutoBlockThreshold: number;
   private readonly listExtensions: boolean;
   private readonly _extensions: GeminiCLIExtension[];
   private readonly _blockedMcpServers: Array<{
@@ -398,6 +404,26 @@ export class Config {
     this.extensionContextFilePaths = params.extensionContextFilePaths ?? [];
     this.maxSessionTurns = params.maxSessionTurns ?? -1;
     this.sessionTokenLimit = params.sessionTokenLimit ?? -1;
+    const envMaxAutoTurns = Number.parseInt(
+      process.env['QWEN_MAX_AUTO_TURNS'] ?? '',
+      10,
+    );
+    const fallbackAutoTurns = Number.isNaN(envMaxAutoTurns)
+      ? DEFAULT_MAX_AUTOMATIC_TURNS
+      : envMaxAutoTurns;
+    const resolvedAutoTurns =
+      params.maxAutomaticTurns ?? fallbackAutoTurns;
+    this.maxAutomaticTurns = resolvedAutoTurns;
+    const envToolAutoBlockThreshold = Number.parseInt(
+      process.env['QWEN_TOOL_ERROR_THRESHOLD'] ?? '',
+      10,
+    );
+    const fallbackToolThreshold = Number.isNaN(envToolAutoBlockThreshold)
+      ? DEFAULT_TOOL_AUTO_BLOCK_THRESHOLD
+      : envToolAutoBlockThreshold;
+    const resolvedToolThreshold =
+      params.toolAutoBlockThreshold ?? fallbackToolThreshold;
+    this.toolAutoBlockThreshold = Math.max(0, resolvedToolThreshold);
     this.experimentalZedIntegration =
       params.experimentalZedIntegration ?? false;
     this.listExtensions = params.listExtensions ?? false;
@@ -612,6 +638,14 @@ export class Config {
     }
     const dynamicLimit = this.getModelContextWindow();
     return dynamicLimit ?? this.sessionTokenLimit;
+  }
+
+  getMaxAutomaticTurns(): number {
+    return this.maxAutomaticTurns;
+  }
+
+  getToolAutoBlockThreshold(): number {
+    return this.toolAutoBlockThreshold;
   }
 
   setQuotaErrorOccurred(value: boolean): void {

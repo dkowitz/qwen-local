@@ -17,4 +17,5 @@
 - ✅ Automatically detect exhausted provider retries, reset the chat session, cancel pending tools, and dispatch a guided recovery prompt so the agent can continue autonomously.
 
 ## 5. Adaptive Turn Management
-- Replace the fixed `MAX_TURNS` with configurable soft limits plus safeguards (longer thinking windows, automatic tool blacklisting after repeated errors) to support lengthy local runs without suppressing genuine progress.
+- ✅ Replace the fixed `MAX_TURNS` guard with a configurable automatic turn budget (`model.maxAutomaticTurns`) so lengthy runs can continue while still emitting a recovery snapshot if the agent needs to pause.
+- ✅ Auto-blacklist tools that fail repeatedly (`tools.autoBlockThreshold`), cancelling pending invocations and nudging the model to adjust its strategy before retrying.

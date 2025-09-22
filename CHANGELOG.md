@@ -14,3 +14,4 @@
 - Auto-recover when loop detection fires by cancelling pending tools, summarizing recent context, and dispatching a guided recovery prompt so the agent can continue autonomously.
 - Harden provider failure handling by classifying network dropouts, cancelling tool execution, resetting the chat, and sending a stabilizer prompt after retries are exhausted.
 - Automatically recover when the session hits turn or token ceilings—or when Gemini stops early for policy/token reasons—by cancelling the active turn and queueing tailored recovery prompts that keep the plan moving without user intervention.
+- Add a configurable automatic turn budget plus tool auto-blacklisting heuristics so local agents can think longer while still breaking out of non-productive loops on their own.

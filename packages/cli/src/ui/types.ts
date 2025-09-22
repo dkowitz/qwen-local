@@ -23,6 +23,7 @@ export enum GeminiEventType {
   Content = 'content',
   ToolCallRequest = 'tool_call_request',
   // Add other event types if the UI hook needs to handle them
+  TurnBudgetExceeded = 'turn_budget_exceeded',
 }
 
 export enum ToolCallStatus {

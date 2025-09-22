@@ -552,6 +552,14 @@ export async function loadCliConfig(
 
   const sandboxConfig = await loadSandboxConfig(settings, argv);
   const cliVersion = await getCliVersion();
+  const envMaxAutoTurns = Number.parseInt(
+    process.env['QWEN_MAX_AUTO_TURNS'] ?? '',
+    10,
+  );
+  const envToolAutoBlockThreshold = Number.parseInt(
+    process.env['QWEN_TOOL_ERROR_THRESHOLD'] ?? '',
+    10,
+  );
 
   const screenReader =
     argv.screenReader !== undefined
@@ -624,6 +632,9 @@ export async function loadCliConfig(
     extensionContextFilePaths,
     sessionTokenLimit: settings.sessionTokenLimit ?? -1,
     maxSessionTurns: settings.model?.maxSessionTurns ?? -1,
+    maxAutomaticTurns:
+      settings.model?.maxAutomaticTurns ??
+      (Number.isNaN(envMaxAutoTurns) ? undefined : envMaxAutoTurns),
     experimentalZedIntegration: argv.experimentalAcp || false,
     listExtensions: argv.listExtensions || false,
     extensions: allExtensions,
@@ -659,6 +670,11 @@ export async function loadCliConfig(
     trustedFolder,
     useRipgrep: settings.tools?.useRipgrep,
     shouldUseNodePtyShell: settings.tools?.usePty,
+    toolAutoBlockThreshold:
+      settings.tools?.autoBlockThreshold ??
+      (Number.isNaN(envToolAutoBlockThreshold)
+        ? undefined
+        : envToolAutoBlockThreshold),
     skipNextSpeakerCheck: settings.model?.skipNextSpeakerCheck,
     enablePromptCompletion: settings.general?.enablePromptCompletion ?? false,
     skipLoopDetection: settings.skipLoopDetection ?? false,
